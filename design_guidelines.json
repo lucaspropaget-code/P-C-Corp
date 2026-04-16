@@ -1,0 +1,133 @@
+{
+  "project_name": "Assault58 Back-Office",
+  "theme": "dark",
+  "archetype": "Archetype 2 (The Performance Pro) modified for Tactical Luxury",
+  "reasoning": "The tactical flashlight domain demands a robust, high-performance aesthetic (Deep Obsidian). The user requested a dark anthracite theme with specific gold accents (#FFBD11). We ensure high readability for senior users and a clean, simplified interface.",
+  "colors": {
+    "background": "#0A0A0A",
+    "foreground": "#FFFFFF",
+    "card": "#161618",
+    "card_foreground": "#F4F4F5",
+    "primary": "#FFBD11",
+    "primary_foreground": "#000000",
+    "secondary": "#27272A",
+    "secondary_foreground": "#FFFFFF",
+    "muted": "#27272A",
+    "muted_foreground": "#A1A1AA",
+    "border": "#27272A",
+    "input": "#27272A",
+    "ring": "#FFBD11",
+    "success": "#22C55E",
+    "warning": "#F59E0B",
+    "destructive": "#EF4444"
+  },
+  "typography": {
+    "font_families": {
+      "headings": "Outfit, sans-serif",
+      "body": "Inter, sans-serif"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl font-bold tracking-tight text-foreground",
+      "h2": "text-2xl sm:text-3xl font-semibold tracking-tight text-foreground",
+      "h3": "text-xl sm:text-2xl font-medium tracking-tight text-foreground",
+      "body_large": "text-lg text-foreground/90 leading-relaxed",
+      "body_normal": "text-base text-foreground/80 leading-relaxed",
+      "body_small": "text-sm text-muted-foreground",
+      "overline": "text-xs font-bold tracking-[0.2em] uppercase text-muted-foreground"
+    },
+    "rules": [
+      "Use Outfit for all headings to provide a geometric, modern, and non-generic look (respecting E1 constraints against Inter for headings).",
+      "Use Inter for body text to maximize readability, especially for senior users as requested.",
+      "Base font size must be slightly larger (16px-18px) to accommodate senior users.",
+      "Never center-align dense data or form labels. Keep them left-aligned for scanning."
+    ]
+  },
+  "spacing_and_layout": {
+    "grid_system": "Mode B (The Control Room Grid)",
+    "rules": [
+      "Use generous padding inside cards (p-6 or p-8) to prevent text collision and maintain the 'interface épurée' request.",
+      "Gap strategy: tight (gap-4 to gap-6) for dashboards.",
+      "Containers must use 1px subtle borders (border-border) with no heavy drop-shadows. Shadows should be ambient (shadow-lg with low opacity).",
+      "Buttons must be rounded-full or rounded-xl to respect the 'Boutons arrondis' requirement.",
+      "Cards should have rounded-2xl or rounded-xl."
+    ]
+  },
+  "components_strategy": {
+    "global": [
+      "Use Shadcn UI for tables, calendars, forms, dialogs, and tabs. Strip default Vercel-look by applying the anthracite/gold palette.",
+      "All interactive elements (buttons, inputs, tabs) MUST have a data-testid attribute for testing (e.g., data-testid='login-button').",
+      "Use Phosphor Icons (or Lucide) for clear, modern iconography."
+    ],
+    "buttons": [
+      "Primary Button: bg-primary text-black font-semibold rounded-full hover:bg-primary/90 transition-colors px-6 py-3",
+      "Secondary Button: bg-secondary text-white font-medium rounded-full hover:bg-secondary/80 transition-colors px-6 py-3"
+    ],
+    "cards": [
+      "Use flat solid surfaces (bg-card) with subtle 1px borders. Do NOT use glassmorphism for the dashboard data cards to maintain high contrast and readability."
+    ],
+    "data_tables": [
+      "Rows must have adequate height (py-4) for senior readability.",
+      "Status badges should be pill-shaped (rounded-full) using subtle background tints (e.g., bg-green-500/10 text-green-500 for 'Livrée')."
+    ]
+  },
+  "views": {
+    "login": {
+      "description": "Secure login page with email/password.",
+      "visuals": "Use the generated login background image on one half of the screen, and the login form on the other half (dark anthracite background)."
+    },
+    "admin_dashboard": {
+      "description": "Full access to everything.",
+      "features": [
+        "Dashboard Overview: Daily/Weekly/Monthly Revenue, Pending Orders, Critical Stock Alerts, Latest Orders.",
+        "Order Management: List with filters (Pending, Shipped, Delivered, Cancelled), Order Details, Manual Order Entry.",
+        "Stock Management: Product list with quantities, customizable alert thresholds, stock movement history.",
+        "Customer Management: Client files, purchase history, contact info.",
+        "Accounting: Expense entry, automated sales tracking, manual bank reconciliation, Excel export button.",
+        "WooCommerce Sync: Configuration fields for Consumer Key, Consumer Secret, and Store URL."
+      ]
+    },
+    "stockeur_view": {
+      "description": "Ultra-simplified view for Léac logistics.",
+      "features": [
+        "ONLY displays orders that need shipping.",
+        "Data shown per order: Client Name, Delivery Address, Products Ordered, Quantities.",
+        "Action: A single, massive button 'Marquer comme expédié' (Mark as shipped)."
+      ]
+    },
+    "marketing_view": {
+      "description": "Marketing and AI space.",
+      "features": [
+        "Stats: Revenue evolution charts, Top-selling products.",
+        "AI Space: Text area to describe a post, 'Générer' button, and a display area for the AI-generated content."
+      ]
+    }
+  },
+  "media": {
+    "images": [
+      {
+        "category": "background",
+        "description": "Abstract dark anthracite and black background with subtle gold geometric lines",
+        "url": "https://static.prod-images.emergentagent.com/jobs/b3b4b7cf-8964-44cf-a56a-b66ec9d895cd/images/796b9170f42c22db306badfc8b076caa9c2df9c69224d597b8c923c84b3ffe84.png"
+      },
+      {
+        "category": "marketing",
+        "description": "Sleek tactical flashlight on a dark slate background with warm golden dramatic rim lighting",
+        "url": "https://static.prod-images.emergentagent.com/jobs/b3b4b7cf-8964-44cf-a56a-b66ec9d895cd/images/6fdd24f3b7f4ea2874745a554982b7eab2ffc885dad04743c2a8e66aca19d6be.png"
+      }
+    ],
+    "logos": [
+      {
+        "category": "brand_logo",
+        "description": "Assault58 text logo with gold #FFBD11 accent in Outfit font",
+        "instruction": "Use purely CSS/Text based logo: <span class='font-bold text-white text-2xl tracking-tight'>Assault<span class='text-primary'>58</span></span>"
+      }
+    ]
+  },
+  "motion": {
+    "rules": [
+      "Use minimal micro-interactions (e.g., button hover states, subtle scale up on cards).",
+      "Stagger list items slightly on load.",
+      "Ensure all motion respects 'prefers-reduced-motion'."
+    ]
+  }
+}
