@@ -1,53 +1,133 @@
-import { useEffect } from "react";
-import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { AuthProvider, useAuth } from "./context/AuthContext";
+import { ProtectedRoute } from "./components/ProtectedRoute";
+import { LoginPage } from "./components/LoginPage";
+import { Layout } from "./components/Layout";
+import { Dashboard } from "./components/Dashboard";
+import { OrdersPage } from "./components/OrdersPage";
+import { StockPage } from "./components/StockPage";
+import { CustomersPage } from "./components/CustomersPage";
+import { AccountingPage } from "./components/AccountingPage";
+import { SettingsPage } from "./components/SettingsPage";
+import { MarketingPage, MarketingAIPage } from "./components/MarketingPage";
+import { StockeurPage } from "./components/StockeurPage";
+import { Toaster } from "./components/ui/sonner";
+import "./App.css";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
+function RoleBasedRedirect() {
+  const { user, loading } = useAuth();
+  
+  if (loading) return null;
+  
+  if (!user) return <Navigate to="/login" replace />;
+  
+  switch (user.role) {
+    case 'admin':
+      return <Navigate to="/dashboard" replace />;
+    case 'marketing':
+      return <Navigate to="/marketing" replace />;
+    case 'stockeur':
+      return <Navigate to="/stockeur" replace />;
+    default:
+      return <Navigate to="/login" replace />;
+  }
+}
 
 function App() {
   return (
-    <div className="App">
+    <AuthProvider>
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
+          {/* Public Routes */}
+          <Route path="/login" element={<LoginPage />} />
+          
+          {/* Role-based redirect */}
+          <Route path="/" element={<RoleBasedRedirect />} />
+          
+          {/* Admin Routes */}
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <Layout><Dashboard /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/orders"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <Layout><OrdersPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/stock"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <Layout><StockPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/customers"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <Layout><CustomersPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/accounting"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <Layout><AccountingPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <Layout><SettingsPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          
+          {/* Marketing Routes */}
+          <Route
+            path="/marketing"
+            element={
+              <ProtectedRoute allowedRoles={['marketing', 'admin']}>
+                <Layout><MarketingPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/marketing/ai"
+            element={
+              <ProtectedRoute allowedRoles={['marketing', 'admin']}>
+                <Layout><MarketingAIPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          
+          {/* Stockeur Routes */}
+          <Route
+            path="/stockeur"
+            element={
+              <ProtectedRoute allowedRoles={['stockeur', 'admin']}>
+                <Layout><StockeurPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          
+          {/* Catch all */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
-    </div>
+      <Toaster position="top-right" richColors />
+    </AuthProvider>
   );
 }
 
