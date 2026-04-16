@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -17,6 +17,9 @@ import bcrypt
 import jwt
 import secrets
 import io
+import csv
+import json
+import httpx
 
 # LLM Integration
 from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -175,6 +178,45 @@ class WooCommerceConfig(BaseModel):
 class AIContentRequest(BaseModel):
     prompt: str
     content_type: str = "social_post"  # social_post, description, email
+
+# --- WooCommerce Sync Models ---
+class WooSyncRequest(BaseModel):
+    sync_type: str = "full"  # full, orders, products
+
+# --- Bank Reconciliation Models ---
+class BankTransactionCreate(BaseModel):
+    date: str
+    description: str
+    amount: float
+    transaction_type: str  # credit, debit
+    reference: Optional[str] = ""
+    notes: Optional[str] = ""
+
+class BankTransactionMatch(BaseModel):
+    match_type: str  # order, expense, none
+    match_id: Optional[str] = None
+
+# --- Social Media Models ---
+class SocialPostCreate(BaseModel):
+    platform: str  # facebook, instagram, tiktok, youtube
+    content: str
+    content_type: str = "social_post"
+    status: str = "draft"  # draft, published
+    scheduled_date: Optional[str] = None
+    ai_generated: bool = False
+
+class SocialPostUpdate(BaseModel):
+    content: Optional[str] = None
+    status: Optional[str] = None
+    scheduled_date: Optional[str] = None
+    metrics: Optional[dict] = None  # {likes, comments, shares, views, reach}
+
+class SocialMetricsUpdate(BaseModel):
+    likes: Optional[int] = 0
+    comments: Optional[int] = 0
+    shares: Optional[int] = 0
+    views: Optional[int] = 0
+    reach: Optional[int] = 0
 
 # Auth Endpoints
 @api_router.post("/auth/login")
@@ -630,19 +672,409 @@ Tu rédiges des emails marketing professionnels et engageants pour promouvoir le
         logging.error(f"AI Generation error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erreur de génération: {str(e)}")
 
-# Bank Reconciliation
-@api_router.get("/accounting/reconciliation")
-async def get_reconciliation(month: str, user: dict = Depends(require_role(["admin"]))):
-    reconciliations = await db.reconciliations.find({"month": month}).to_list(100)
-    return [{"id": str(r["_id"]), **{k:v for k,v in r.items() if k != "_id"}} for r in reconciliations]
+# Bank Reconciliation - Advanced
+@api_router.get("/accounting/bank-transactions")
+async def get_bank_transactions(month: Optional[str] = None, status: Optional[str] = None, user: dict = Depends(require_role(["admin"]))):
+    query = {}
+    if month:
+        query["date"] = {"$regex": f"^{month}"}
+    if status:
+        query["match_status"] = status
+    txns = await db.bank_transactions.find(query).sort("date", -1).to_list(1000)
+    return [{"id": str(t["_id"]), **{k:v for k,v in t.items() if k != "_id"}} for t in txns]
 
-@api_router.post("/accounting/reconciliation")
-async def add_reconciliation(data: dict, user: dict = Depends(require_role(["admin"]))):
-    data["created_at"] = datetime.now(timezone.utc).isoformat()
-    data["created_by"] = user["name"]
-    result = await db.reconciliations.insert_one(data)
-    data.pop("_id", None)
-    return {"id": str(result.inserted_id), **data}
+@api_router.post("/accounting/bank-transactions")
+async def create_bank_transaction(txn: BankTransactionCreate, user: dict = Depends(require_role(["admin"]))):
+    txn_dict = txn.model_dump()
+    txn_dict["match_status"] = "unmatched"
+    txn_dict["match_type"] = None
+    txn_dict["match_id"] = None
+    txn_dict["created_at"] = datetime.now(timezone.utc).isoformat()
+    txn_dict["created_by"] = user["name"]
+    result = await db.bank_transactions.insert_one(txn_dict)
+    txn_dict.pop("_id", None)
+    return {"id": str(result.inserted_id), **txn_dict}
+
+@api_router.post("/accounting/bank-import")
+async def import_bank_csv(file: UploadFile = File(...), user: dict = Depends(require_role(["admin"]))):
+    content = await file.read()
+    text = content.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text), delimiter=";")
+    
+    imported = 0
+    errors = []
+    for i, row in enumerate(reader):
+        try:
+            # Try to detect columns
+            date_val = row.get("Date") or row.get("date") or row.get("Date opération") or row.get("DATE") or ""
+            desc_val = row.get("Libellé") or row.get("Description") or row.get("Libelle") or row.get("LIBELLE") or row.get("description") or ""
+            
+            # Amount: try different column names
+            amount_str = row.get("Montant") or row.get("Amount") or row.get("MONTANT") or "0"
+            debit_str = row.get("Débit") or row.get("Debit") or row.get("DEBIT") or ""
+            credit_str = row.get("Crédit") or row.get("Credit") or row.get("CREDIT") or ""
+            
+            if debit_str and credit_str:
+                debit = float(debit_str.replace(",", ".").replace(" ", "").strip() or "0")
+                credit = float(credit_str.replace(",", ".").replace(" ", "").strip() or "0")
+                amount = credit - debit if credit else -debit
+            else:
+                amount = float(amount_str.replace(",", ".").replace(" ", "").strip() or "0")
+            
+            txn_type = "credit" if amount >= 0 else "debit"
+            ref = row.get("Référence") or row.get("Reference") or row.get("Ref") or ""
+            
+            txn_dict = {
+                "date": date_val.strip(),
+                "description": desc_val.strip(),
+                "amount": abs(amount),
+                "transaction_type": txn_type,
+                "reference": ref.strip(),
+                "notes": "",
+                "match_status": "unmatched",
+                "match_type": None,
+                "match_id": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_by": user["name"],
+                "source": "csv_import"
+            }
+            await db.bank_transactions.insert_one(txn_dict)
+            imported += 1
+        except Exception as e:
+            errors.append(f"Ligne {i+2}: {str(e)}")
+    
+    return {"imported": imported, "errors": errors}
+
+@api_router.put("/accounting/bank-transactions/{txn_id}/match")
+async def match_bank_transaction(txn_id: str, match: BankTransactionMatch, user: dict = Depends(require_role(["admin"]))):
+    update_data = {
+        "match_type": match.match_type,
+        "match_id": match.match_id,
+        "match_status": "matched" if match.match_type != "none" else "unmatched",
+        "matched_at": datetime.now(timezone.utc).isoformat(),
+        "matched_by": user["name"]
+    }
+    await db.bank_transactions.update_one({"_id": ObjectId(txn_id)}, {"$set": update_data})
+    return {"message": "Transaction rapprochée"}
+
+@api_router.delete("/accounting/bank-transactions/{txn_id}")
+async def delete_bank_transaction(txn_id: str, user: dict = Depends(require_role(["admin"]))):
+    await db.bank_transactions.delete_one({"_id": ObjectId(txn_id)})
+    return {"message": "Transaction supprimée"}
+
+@api_router.get("/accounting/reconciliation-summary")
+async def get_reconciliation_summary(month: str, user: dict = Depends(require_role(["admin"]))):
+    # Get bank transactions for month
+    bank_txns = await db.bank_transactions.find({"date": {"$regex": f"^{month}"}}).to_list(1000)
+    
+    total_bank_credits = sum(t["amount"] for t in bank_txns if t["transaction_type"] == "credit")
+    total_bank_debits = sum(t["amount"] for t in bank_txns if t["transaction_type"] == "debit")
+    matched_count = sum(1 for t in bank_txns if t.get("match_status") == "matched")
+    unmatched_count = sum(1 for t in bank_txns if t.get("match_status") != "matched")
+    
+    # Get system data for comparison
+    orders = await db.orders.find({"created_at": {"$regex": f"^{month}"}, "status": {"$ne": "cancelled"}}).to_list(1000)
+    expenses = await db.expenses.find({"date": {"$regex": f"^{month}"}}).to_list(1000)
+    
+    system_revenue = sum(o.get("total_amount", 0) for o in orders)
+    system_expenses = sum(e.get("amount", 0) for e in expenses)
+    
+    return {
+        "month": month,
+        "bank": {"credits": total_bank_credits, "debits": total_bank_debits, "balance": total_bank_credits - total_bank_debits},
+        "system": {"revenue": system_revenue, "expenses": system_expenses, "balance": system_revenue - system_expenses},
+        "difference": (total_bank_credits - total_bank_debits) - (system_revenue - system_expenses),
+        "matched": matched_count,
+        "unmatched": unmatched_count,
+        "total_transactions": len(bank_txns)
+    }
+
+# ========= WooCommerce Sync =========
+async def _woo_api_request(method: str, endpoint: str, params: dict = None):
+    """Helper to make WooCommerce REST API requests"""
+    config = await db.settings.find_one({"type": "woocommerce"})
+    if not config or not config.get("store_url") or not config.get("consumer_key") or not config.get("consumer_secret"):
+        raise HTTPException(status_code=400, detail="Configuration WooCommerce manquante. Configurez d'abord vos clés API dans Paramètres.")
+    
+    url = f"{config['store_url'].rstrip('/')}/wp-json/wc/v3/{endpoint}"
+    auth = (config["consumer_key"], config["consumer_secret"])
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        if method == "GET":
+            resp = await client.get(url, auth=auth, params=params or {})
+        else:
+            resp = await client.post(url, auth=auth, json=params or {})
+        
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=resp.status_code, detail=f"Erreur WooCommerce: {resp.text[:200]}")
+        return resp.json()
+
+@api_router.post("/woocommerce/sync")
+async def sync_woocommerce(req: WooSyncRequest, user: dict = Depends(require_role(["admin"]))):
+    log = {"type": req.sync_type, "started_at": datetime.now(timezone.utc).isoformat(), "status": "running", "triggered_by": user["name"], "details": {}}
+    log_result = await db.sync_logs.insert_one(log)
+    log_id = str(log_result.inserted_id)
+    
+    try:
+        orders_imported = 0
+        products_synced = 0
+        
+        if req.sync_type in ["full", "orders"]:
+            # Fetch recent WooCommerce orders
+            page = 1
+            while True:
+                woo_orders = await _woo_api_request("GET", "orders", {"page": page, "per_page": 50, "orderby": "date", "order": "desc"})
+                if not woo_orders:
+                    break
+                
+                for wo in woo_orders:
+                    existing = await db.orders.find_one({"woo_id": wo["id"]})
+                    if existing:
+                        # Update status if changed
+                        woo_status_map = {"processing": "pending", "completed": "delivered", "on-hold": "pending", "cancelled": "cancelled", "refunded": "cancelled"}
+                        new_status = woo_status_map.get(wo["status"], "pending")
+                        if existing.get("status") != new_status:
+                            await db.orders.update_one({"_id": existing["_id"]}, {"$set": {"status": new_status, "updated_at": datetime.now(timezone.utc).isoformat()}})
+                        continue
+                    
+                    # Map WooCommerce order to our format
+                    items = []
+                    for li in wo.get("line_items", []):
+                        items.append({
+                            "product_id": "",
+                            "product_name": li.get("name", ""),
+                            "quantity": li.get("quantity", 1),
+                            "unit_price": float(li.get("price", 0))
+                        })
+                    
+                    billing = wo.get("billing", {})
+                    shipping = wo.get("shipping", {})
+                    ship_addr = f"{shipping.get('address_1', '')} {shipping.get('address_2', '')}, {shipping.get('postcode', '')} {shipping.get('city', '')}".strip(", ")
+                    if not ship_addr or ship_addr == ",":
+                        ship_addr = f"{billing.get('address_1', '')} {billing.get('address_2', '')}, {billing.get('postcode', '')} {billing.get('city', '')}".strip(", ")
+                    
+                    woo_status_map = {"processing": "pending", "completed": "delivered", "on-hold": "pending", "cancelled": "cancelled", "refunded": "cancelled", "pending": "pending"}
+                    
+                    order_doc = {
+                        "woo_id": wo["id"],
+                        "order_number": f"WOO-{wo['number']}",
+                        "customer_name": f"{billing.get('first_name', '')} {billing.get('last_name', '')}".strip(),
+                        "customer_email": billing.get("email", ""),
+                        "customer_phone": billing.get("phone", ""),
+                        "shipping_address": ship_addr,
+                        "items": items,
+                        "total_amount": float(wo.get("total", 0)),
+                        "status": woo_status_map.get(wo["status"], "pending"),
+                        "source": "woocommerce",
+                        "created_at": wo.get("date_created", datetime.now(timezone.utc).isoformat()),
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }
+                    await db.orders.insert_one(order_doc)
+                    orders_imported += 1
+                
+                if len(woo_orders) < 50:
+                    break
+                page += 1
+        
+        if req.sync_type in ["full", "products"]:
+            # Fetch WooCommerce products
+            page = 1
+            while True:
+                woo_products = await _woo_api_request("GET", "products", {"page": page, "per_page": 50})
+                if not woo_products:
+                    break
+                
+                for wp in woo_products:
+                    existing = await db.products.find_one({"woo_id": wp["id"]})
+                    stock_qty = wp.get("stock_quantity") or 0
+                    
+                    if existing:
+                        await db.products.update_one({"_id": existing["_id"]}, {"$set": {
+                            "name": wp["name"],
+                            "price": float(wp.get("price", 0) or 0),
+                            "quantity": stock_qty,
+                            "updated_at": datetime.now(timezone.utc).isoformat()
+                        }})
+                    else:
+                        product_doc = {
+                            "woo_id": wp["id"],
+                            "name": wp["name"],
+                            "sku": wp.get("sku", f"WOO-{wp['id']}"),
+                            "description": wp.get("short_description", "")[:500],
+                            "price": float(wp.get("price", 0) or 0),
+                            "quantity": stock_qty,
+                            "alert_threshold": 5,
+                            "category": wp.get("categories", [{}])[0].get("name", "") if wp.get("categories") else "",
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "updated_at": datetime.now(timezone.utc).isoformat()
+                        }
+                        await db.products.insert_one(product_doc)
+                    products_synced += 1
+                
+                if len(woo_products) < 50:
+                    break
+                page += 1
+        
+        # Update log
+        await db.sync_logs.update_one({"_id": ObjectId(log_id)}, {"$set": {
+            "status": "success",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "details": {"orders_imported": orders_imported, "products_synced": products_synced}
+        }})
+        
+        return {"message": "Synchronisation réussie", "orders_imported": orders_imported, "products_synced": products_synced}
+    
+    except HTTPException:
+        await db.sync_logs.update_one({"_id": ObjectId(log_id)}, {"$set": {"status": "error", "completed_at": datetime.now(timezone.utc).isoformat()}})
+        raise
+    except Exception as e:
+        await db.sync_logs.update_one({"_id": ObjectId(log_id)}, {"$set": {"status": "error", "completed_at": datetime.now(timezone.utc).isoformat(), "error": str(e)}})
+        raise HTTPException(status_code=500, detail=f"Erreur de synchronisation: {str(e)}")
+
+@api_router.post("/woocommerce/webhook")
+async def woocommerce_webhook(request: Request):
+    """Receive real-time webhook from WooCommerce"""
+    try:
+        body = await request.json()
+        topic = request.headers.get("X-WC-Webhook-Topic", "")
+        
+        if topic.startswith("order."):
+            wo = body
+            billing = wo.get("billing", {})
+            shipping = wo.get("shipping", {})
+            ship_addr = f"{shipping.get('address_1', '')} {shipping.get('address_2', '')}, {shipping.get('postcode', '')} {shipping.get('city', '')}".strip(", ")
+            if not ship_addr or ship_addr == ",":
+                ship_addr = f"{billing.get('address_1', '')} {billing.get('address_2', '')}, {billing.get('postcode', '')} {billing.get('city', '')}".strip(", ")
+            
+            items = [{"product_id": "", "product_name": li.get("name", ""), "quantity": li.get("quantity", 1), "unit_price": float(li.get("price", 0))} for li in wo.get("line_items", [])]
+            woo_status_map = {"processing": "pending", "completed": "delivered", "on-hold": "pending", "cancelled": "cancelled", "refunded": "cancelled", "pending": "pending"}
+            
+            existing = await db.orders.find_one({"woo_id": wo.get("id")})
+            if existing:
+                await db.orders.update_one({"_id": existing["_id"]}, {"$set": {
+                    "status": woo_status_map.get(wo.get("status", ""), "pending"),
+                    "items": items,
+                    "total_amount": float(wo.get("total", 0)),
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }})
+            else:
+                order_doc = {
+                    "woo_id": wo.get("id"),
+                    "order_number": f"WOO-{wo.get('number', '')}",
+                    "customer_name": f"{billing.get('first_name', '')} {billing.get('last_name', '')}".strip(),
+                    "customer_email": billing.get("email", ""),
+                    "customer_phone": billing.get("phone", ""),
+                    "shipping_address": ship_addr,
+                    "items": items,
+                    "total_amount": float(wo.get("total", 0)),
+                    "status": woo_status_map.get(wo.get("status", ""), "pending"),
+                    "source": "woocommerce",
+                    "created_at": wo.get("date_created", datetime.now(timezone.utc).isoformat()),
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }
+                await db.orders.insert_one(order_doc)
+            
+            # Log webhook
+            await db.sync_logs.insert_one({
+                "type": "webhook",
+                "topic": topic,
+                "woo_id": wo.get("id"),
+                "status": "success",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "triggered_by": "webhook"
+            })
+        
+        return {"status": "ok"}
+    except Exception as e:
+        logging.error(f"Webhook error: {str(e)}")
+        return {"status": "error", "detail": str(e)}
+
+@api_router.get("/woocommerce/sync-history")
+async def get_sync_history(user: dict = Depends(require_role(["admin"]))):
+    logs = await db.sync_logs.find({}).sort("started_at", -1).limit(50).to_list(50)
+    return [{"id": str(l["_id"]), **{k:v for k,v in l.items() if k != "_id"}} for l in logs]
+
+@api_router.get("/woocommerce/webhook-url")
+async def get_webhook_url(user: dict = Depends(require_role(["admin"]))):
+    frontend_url = os.environ.get("FRONTEND_URL", "")
+    webhook_url = f"{frontend_url}/api/woocommerce/webhook" if frontend_url else ""
+    return {"webhook_url": webhook_url}
+
+# ========= Social Media Dashboard =========
+@api_router.get("/social/posts")
+async def get_social_posts(platform: Optional[str] = None, status: Optional[str] = None, user: dict = Depends(require_role(["marketing", "admin"]))):
+    query = {}
+    if platform:
+        query["platform"] = platform
+    if status:
+        query["status"] = status
+    posts = await db.social_posts.find(query).sort("created_at", -1).to_list(500)
+    return [{"id": str(p["_id"]), **{k:v for k,v in p.items() if k != "_id"}} for p in posts]
+
+@api_router.post("/social/posts")
+async def create_social_post(post: SocialPostCreate, user: dict = Depends(require_role(["marketing", "admin"]))):
+    post_dict = post.model_dump()
+    post_dict["metrics"] = {"likes": 0, "comments": 0, "shares": 0, "views": 0, "reach": 0}
+    post_dict["created_at"] = datetime.now(timezone.utc).isoformat()
+    post_dict["created_by"] = user["name"]
+    post_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
+    result = await db.social_posts.insert_one(post_dict)
+    post_dict.pop("_id", None)
+    return {"id": str(result.inserted_id), **post_dict}
+
+@api_router.put("/social/posts/{post_id}")
+async def update_social_post(post_id: str, update: SocialPostUpdate, user: dict = Depends(require_role(["marketing", "admin"]))):
+    update_data = {k: v for k, v in update.model_dump().items() if v is not None}
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.social_posts.update_one({"_id": ObjectId(post_id)}, {"$set": update_data})
+    updated = await db.social_posts.find_one({"_id": ObjectId(post_id)})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Post non trouvé")
+    return {"id": str(updated["_id"]), **{k:v for k,v in updated.items() if k != "_id"}}
+
+@api_router.put("/social/posts/{post_id}/metrics")
+async def update_post_metrics(post_id: str, metrics: SocialMetricsUpdate, user: dict = Depends(require_role(["marketing", "admin"]))):
+    metrics_dict = {k: v for k, v in metrics.model_dump().items() if v is not None}
+    await db.social_posts.update_one({"_id": ObjectId(post_id)}, {"$set": {"metrics": metrics_dict, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"message": "Métriques mises à jour"}
+
+@api_router.delete("/social/posts/{post_id}")
+async def delete_social_post(post_id: str, user: dict = Depends(require_role(["marketing", "admin"]))):
+    await db.social_posts.delete_one({"_id": ObjectId(post_id)})
+    return {"message": "Post supprimé"}
+
+@api_router.get("/social/metrics")
+async def get_social_metrics(user: dict = Depends(require_role(["marketing", "admin"]))):
+    pipeline = [
+        {"$match": {"status": "published"}},
+        {"$group": {
+            "_id": "$platform",
+            "posts_count": {"$sum": 1},
+            "total_likes": {"$sum": "$metrics.likes"},
+            "total_comments": {"$sum": "$metrics.comments"},
+            "total_shares": {"$sum": "$metrics.shares"},
+            "total_views": {"$sum": "$metrics.views"},
+            "total_reach": {"$sum": "$metrics.reach"}
+        }}
+    ]
+    by_platform = await db.social_posts.aggregate(pipeline).to_list(10)
+    
+    # Global stats
+    total_posts = await db.social_posts.count_documents({})
+    published_posts = await db.social_posts.count_documents({"status": "published"})
+    draft_posts = await db.social_posts.count_documents({"status": "draft"})
+    ai_generated = await db.social_posts.count_documents({"ai_generated": True})
+    
+    return {
+        "by_platform": by_platform,
+        "totals": {
+            "total_posts": total_posts,
+            "published": published_posts,
+            "drafts": draft_posts,
+            "ai_generated": ai_generated
+        }
+    }
 
 # Include the router
 app.include_router(api_router)

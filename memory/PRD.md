@@ -9,34 +9,28 @@ Back-office web complet pour Assault58, PME e-commerce vendant des lampes torche
 - **AI Integration**: OpenAI GPT-5.2 via Emergent LLM Key
 
 ## User Personas
-1. **Admin** - Gestion complète (commandes, stocks, clients, comptabilité, paramètres)
-2. **Stockeur (Léac)** - Vue expéditions uniquement + bouton "Marquer comme expédié"
-3. **Marketing** - Stats de vente + Génération contenu IA
+1. **Admin** - Gestion complète
+2. **Stockeur (Léac)** - Expéditions uniquement
+3. **Marketing** - Stats + IA + Social
 
 ## What's Been Implemented (April 2026)
-- Authentication JWT 3 rôles (admin, stockeur, marketing)
-- Dashboard Admin (CA jour/semaine/mois, alertes stock, dernières commandes)
-- Gestion commandes (liste, filtres, détail, création manuelle)
-- Gestion stocks (CRUD produits, mouvements, historique, seuils alerte)
-- Gestion clients (CRUD, fiche détaillée, historique achats)
-- Comptabilité (saisie dépenses, résumé mensuel, export Excel)
-- Configuration WooCommerce (Consumer Key/Secret/URL)
-- Vue Stockeur simplifiée (commandes à expédier uniquement)
-- Stats Marketing (graphiques CA, produits les plus vendus)
-- Génération contenu IA (posts sociaux, descriptions produit, emails)
-- Design noir/anthracite avec accents dorés #FFBD11
+
+### Phase 1 (Initial MVP)
+- Auth JWT 3 rôles, Dashboard Admin, Commandes CRUD, Stocks CRUD, Clients CRUD
+- Comptabilité + Export Excel, Config WooCommerce, Vue Stockeur, Stats Marketing, Génération IA
+
+### Phase 2 (Améliorations - 16 avril 2026)
+- **Synchro WooCommerce** : Bouton sync manuelle (commandes+produits) + webhook temps réel + historique des synchros
+- **Rapprochement bancaire avancé** : Import CSV bancaire + saisie manuelle + matching transactions avec commandes/dépenses + résumé rapprochement (solde banque vs système + écart)
+- **Tableau de bord réseaux sociaux** : 4 plateformes (Facebook, Instagram, TikTok, YouTube) + métriques manuelles (likes, commentaires, partages, vues, portée) + historique contenus IA + sauvegarde post IA vers social + filtres + graphique engagement
 
 ## Prioritized Backlog
-### P0 (Critique)
-- [x] Correction ObjectId serialization (endpoints POST)
-- [x] Correction CORS pour authentification
-
-### P1 (Important)
-- [ ] Synchronisation automatique WooCommerce (import commandes/stocks)
-- [ ] Rapprochement bancaire avancé
-
-### P2 (Nice to have)
-- [ ] Notifications push stock critique
-- [ ] Tableau de bord réseaux sociaux
+### P1
+- [ ] Synchronisation WooCommerce automatique périodique (cron)
+- [ ] Notifications email alertes stock critique
 - [ ] Export multi-format (CSV, PDF)
-- [ ] Historique des générations IA
+
+### P2
+- [ ] Connexion API réseaux sociaux (auto-publication)
+- [ ] Import OFX/QIF pour rapprochement bancaire
+- [ ] Dashboard analytics avancé avec comparaison périodes

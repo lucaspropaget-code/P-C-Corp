@@ -220,6 +220,8 @@ export function MarketingAIPage() {
   const [contentType, setContentType] = useState('social_post');
   const [generatedContent, setGeneratedContent] = useState('');
   const [generating, setGenerating] = useState(false);
+  const [savePlatform, setSavePlatform] = useState('instagram');
+  const [saving, setSaving] = useState(false);
 
   const generateContent = async () => {
     if (!prompt.trim()) {
@@ -248,6 +250,24 @@ export function MarketingAIPage() {
   const copyToClipboard = () => {
     navigator.clipboard.writeText(generatedContent);
     toast.success('Copié dans le presse-papier');
+  };
+
+  const saveToSocial = async () => {
+    setSaving(true);
+    try {
+      await axios.post(`${API_URL}/api/social/posts`, {
+        platform: savePlatform,
+        content: generatedContent,
+        content_type: contentType,
+        status: 'draft',
+        ai_generated: true
+      }, { withCredentials: true });
+      toast.success('Sauvegardé dans les brouillons réseaux sociaux');
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -333,12 +353,33 @@ export function MarketingAIPage() {
           </CardHeader>
           <CardContent>
             {generatedContent ? (
-              <div 
-                className="bg-secondary/50 rounded-xl p-4 min-h-64 whitespace-pre-wrap text-base leading-relaxed"
-                data-testid="generated-content"
-              >
-                {generatedContent}
-              </div>
+              <>
+                <div 
+                  className="bg-secondary/50 rounded-xl p-4 min-h-48 whitespace-pre-wrap text-base leading-relaxed"
+                  data-testid="generated-content"
+                >
+                  {generatedContent}
+                </div>
+                <div className="mt-4 p-4 rounded-xl bg-primary/5 border border-primary/20 space-y-3">
+                  <p className="text-sm font-medium">Sauvegarder dans les réseaux sociaux</p>
+                  <div className="flex gap-2">
+                    <Select value={savePlatform} onValueChange={setSavePlatform}>
+                      <SelectTrigger className="bg-secondary flex-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="facebook">Facebook</SelectItem>
+                        <SelectItem value="instagram">Instagram</SelectItem>
+                        <SelectItem value="tiktok">TikTok</SelectItem>
+                        <SelectItem value="youtube">YouTube</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button onClick={saveToSocial} disabled={saving} className="btn-primary" data-testid="save-to-social-button">
+                      {saving ? 'Sauvegarde...' : 'Sauvegarder'}
+                    </Button>
+                  </div>
+                </div>
+              </>
             ) : (
               <div className="bg-secondary/50 rounded-xl p-4 min-h-64 flex items-center justify-center text-muted-foreground">
                 Le contenu généré apparaîtra ici

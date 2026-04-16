@@ -11,7 +11,10 @@ import {
   Flashlight,
   TrendingUp,
   Sparkles,
-  Truck
+  Truck,
+  RefreshCw,
+  Landmark,
+  Share2
 } from 'lucide-react';
 import { Button } from './ui/button';
 
@@ -21,12 +24,15 @@ const adminLinks = [
   { to: '/stock', icon: Package, label: 'Stocks' },
   { to: '/customers', icon: Users, label: 'Clients' },
   { to: '/accounting', icon: Calculator, label: 'Comptabilité' },
+  { to: '/bank', icon: Landmark, label: 'Banque' },
+  { to: '/woo-sync', icon: RefreshCw, label: 'Synchro WooCommerce' },
   { to: '/settings', icon: Settings, label: 'Paramètres' },
 ];
 
 const marketingLinks = [
   { to: '/marketing', icon: TrendingUp, label: 'Statistiques' },
   { to: '/marketing/ai', icon: Sparkles, label: 'Génération IA' },
+  { to: '/marketing/social', icon: Share2, label: 'Réseaux sociaux' },
 ];
 
 const stockeurLinks = [

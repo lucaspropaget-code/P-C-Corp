@@ -11,6 +11,9 @@ import { AccountingPage } from "./components/AccountingPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { MarketingPage, MarketingAIPage } from "./components/MarketingPage";
 import { StockeurPage } from "./components/StockeurPage";
+import { BankReconciliationPage } from "./components/BankReconciliationPage";
+import { WooCommerceSyncPage } from "./components/WooCommerceSyncPage";
+import { SocialDashboardPage } from "./components/SocialDashboardPage";
 import { Toaster } from "./components/ui/sonner";
 import "./App.css";
 
@@ -93,6 +96,22 @@ function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/bank"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <Layout><BankReconciliationPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/woo-sync"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <Layout><WooCommerceSyncPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
           
           {/* Marketing Routes */}
           <Route
@@ -108,6 +127,14 @@ function App() {
             element={
               <ProtectedRoute allowedRoles={['marketing', 'admin']}>
                 <Layout><MarketingAIPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/marketing/social"
+            element={
+              <ProtectedRoute allowedRoles={['marketing', 'admin']}>
+                <Layout><SocialDashboardPage /></Layout>
               </ProtectedRoute>
             }
           />
