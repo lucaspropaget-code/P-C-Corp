@@ -204,12 +204,16 @@ class SocialPostCreate(BaseModel):
     status: str = "draft"  # draft, published
     scheduled_date: Optional[str] = None
     ai_generated: bool = False
+    ai_prompt: Optional[str] = ""
+    webhook_url: Optional[str] = ""
 
 class SocialPostUpdate(BaseModel):
     content: Optional[str] = None
     status: Optional[str] = None
+    platform: Optional[str] = None
     scheduled_date: Optional[str] = None
-    metrics: Optional[dict] = None  # {likes, comments, shares, views, reach}
+    metrics: Optional[dict] = None
+    webhook_url: Optional[str] = None
 
 class SocialMetricsUpdate(BaseModel):
     likes: Optional[int] = 0
@@ -430,6 +434,13 @@ async def update_order_status(order_id: str, status_update: OrderStatusUpdate, r
     if user["role"] not in ["admin", "stockeur"]:
         raise HTTPException(status_code=403, detail="Accès non autorisé")
     
+    # Get current order for history
+    order = await db.orders.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        raise HTTPException(status_code=404, detail="Commande non trouvée")
+    
+    old_status = order.get("status", "unknown")
+    
     update_data = {
         "status": status_update.status,
         "updated_at": datetime.now(timezone.utc).isoformat()
@@ -442,7 +453,25 @@ async def update_order_status(order_id: str, status_update: OrderStatusUpdate, r
         update_data["delivered_at"] = datetime.now(timezone.utc).isoformat()
     
     await db.orders.update_one({"_id": ObjectId(order_id)}, {"$set": update_data})
+    
+    # Record status change history
+    history_entry = {
+        "order_id": order_id,
+        "order_number": order.get("order_number", ""),
+        "old_status": old_status,
+        "new_status": status_update.status,
+        "changed_by": user["name"],
+        "changed_by_role": user["role"],
+        "changed_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.order_status_history.insert_one(history_entry)
+    
     return {"message": "Statut mis à jour"}
+
+@api_router.get("/orders/{order_id}/history")
+async def get_order_status_history(order_id: str, user: dict = Depends(require_role(["admin"]))):
+    history = await db.order_status_history.find({"order_id": order_id}, {"_id": 0}).sort("changed_at", -1).to_list(50)
+    return history
 
 # Stockeur specific endpoint - only pending orders
 @api_router.get("/stockeur/orders")
@@ -666,7 +695,24 @@ Tu rédiges des emails marketing professionnels et engageants pour promouvoir le
         user_message = UserMessage(text=request.prompt)
         response = await chat.send_message(user_message)
         
-        return {"content": response, "content_type": request.content_type}
+        # Auto-save generated content to social_posts as draft
+        post_doc = {
+            "platform": "instagram",
+            "content": response,
+            "content_type": request.content_type,
+            "status": "draft",
+            "ai_generated": True,
+            "ai_prompt": request.prompt,
+            "webhook_url": "",
+            "metrics": {"likes": 0, "comments": 0, "shares": 0, "views": 0, "reach": 0},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": user["name"],
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        save_result = await db.social_posts.insert_one(post_doc)
+        saved_id = str(save_result.inserted_id)
+        
+        return {"content": response, "content_type": request.content_type, "saved_post_id": saved_id}
         
     except Exception as e:
         logging.error(f"AI Generation error: {str(e)}")
@@ -1019,6 +1065,10 @@ async def create_social_post(post: SocialPostCreate, user: dict = Depends(requir
     post_dict["created_at"] = datetime.now(timezone.utc).isoformat()
     post_dict["created_by"] = user["name"]
     post_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if not post_dict.get("webhook_url"):
+        post_dict["webhook_url"] = ""
+    if not post_dict.get("ai_prompt"):
+        post_dict["ai_prompt"] = ""
     result = await db.social_posts.insert_one(post_dict)
     post_dict.pop("_id", None)
     return {"id": str(result.inserted_id), **post_dict}
@@ -1171,7 +1221,8 @@ async def startup_event():
     products = await db.products.find({}).to_list(10)
     if products:
         existing_orders = await db.orders.count_documents({})
-        if existing_orders == 0:
+        if existing_orders < 5:
+            import random
             demo_orders = [
                 {"customer_name": "Jean Dupont", "customer_email": "jean.dupont@email.com", "shipping_address": "15 Rue de la Paix, 75001 Paris", 
                  "items": [{"product_id": str(products[0]["_id"]), "product_name": products[0]["name"], "quantity": 2, "unit_price": products[0]["price"]}],
@@ -1186,11 +1237,51 @@ async def startup_event():
                           {"product_id": str(products[4]["_id"]), "product_name": products[4]["name"], "quantity": 2, "unit_price": products[4]["price"]}],
                  "total_amount": products[2]["price"] * 3 + products[4]["price"] * 2, "status": "delivered", "source": "manual",
                  "order_number": f"ORD-{datetime.now().strftime('%Y%m%d')}-G7H8I9"},
+                # 8 new demo orders
+                {"customer_name": "Sophie Leroy", "customer_email": "s.leroy@email.com", "shipping_address": "42 Boulevard Haussmann, 75009 Paris",
+                 "items": [{"product_id": str(products[0]["_id"]), "product_name": products[0]["name"], "quantity": 1, "unit_price": products[0]["price"]},
+                          {"product_id": str(products[3]["_id"]), "product_name": products[3]["name"], "quantity": 1, "unit_price": products[3]["price"]}],
+                 "total_amount": products[0]["price"] + products[3]["price"], "status": "pending", "source": "woocommerce",
+                 "order_number": "ORD-20260415-K1L2M3"},
+                {"customer_name": "Thomas Moreau", "customer_email": "t.moreau@email.com", "shipping_address": "7 Rue de la République, 13001 Marseille",
+                 "items": [{"product_id": str(products[1]["_id"]), "product_name": products[1]["name"], "quantity": 2, "unit_price": products[1]["price"]}],
+                 "total_amount": products[1]["price"] * 2, "status": "shipped", "source": "woocommerce",
+                 "order_number": "ORD-20260414-N4O5P6"},
+                {"customer_name": "Camille Petit", "customer_email": "c.petit@email.com", "shipping_address": "15 Place Bellecour, 69002 Lyon",
+                 "items": [{"product_id": str(products[4]["_id"]), "product_name": products[4]["name"], "quantity": 5, "unit_price": products[4]["price"]}],
+                 "total_amount": products[4]["price"] * 5, "status": "delivered", "source": "manual",
+                 "order_number": "ORD-20260413-Q7R8S9"},
+                {"customer_name": "Lucas Dubois", "customer_email": "l.dubois@email.com", "shipping_address": "3 Rue Foch, 34000 Montpellier",
+                 "items": [{"product_id": str(products[3]["_id"]), "product_name": products[3]["name"], "quantity": 1, "unit_price": products[3]["price"]}],
+                 "total_amount": products[3]["price"], "status": "cancelled", "source": "woocommerce",
+                 "order_number": "ORD-20260412-T1U2V3"},
+                {"customer_name": "Emma Garnier", "customer_email": "e.garnier@email.com", "shipping_address": "28 Rue Alsace-Lorraine, 31000 Toulouse",
+                 "items": [{"product_id": str(products[2]["_id"]), "product_name": products[2]["name"], "quantity": 2, "unit_price": products[2]["price"]},
+                          {"product_id": str(products[0]["_id"]), "product_name": products[0]["name"], "quantity": 1, "unit_price": products[0]["price"]}],
+                 "total_amount": products[2]["price"] * 2 + products[0]["price"], "status": "pending", "source": "woocommerce",
+                 "order_number": "ORD-20260411-W4X5Y6"},
+                {"customer_name": "Hugo Roux", "customer_email": "h.roux@email.com", "shipping_address": "12 Quai des Chartrons, 33000 Bordeaux",
+                 "items": [{"product_id": str(products[1]["_id"]), "product_name": products[1]["name"], "quantity": 1, "unit_price": products[1]["price"]},
+                          {"product_id": str(products[4]["_id"]), "product_name": products[4]["name"], "quantity": 3, "unit_price": products[4]["price"]}],
+                 "total_amount": products[1]["price"] + products[4]["price"] * 3, "status": "shipped", "source": "manual",
+                 "order_number": "ORD-20260410-Z7A8B9"},
+                {"customer_name": "Léa Fournier", "customer_email": "l.fournier@email.com", "shipping_address": "5 Place Stanislas, 54000 Nancy",
+                 "items": [{"product_id": str(products[0]["_id"]), "product_name": products[0]["name"], "quantity": 3, "unit_price": products[0]["price"]}],
+                 "total_amount": products[0]["price"] * 3, "status": "delivered", "source": "woocommerce",
+                 "order_number": "ORD-20260409-C1D2E3"},
+                {"customer_name": "Nathan Lambert", "customer_email": "n.lambert@email.com", "shipping_address": "18 Rue de Siam, 29200 Brest",
+                 "items": [{"product_id": str(products[3]["_id"]), "product_name": products[3]["name"], "quantity": 2, "unit_price": products[3]["price"]},
+                          {"product_id": str(products[2]["_id"]), "product_name": products[2]["name"], "quantity": 1, "unit_price": products[2]["price"]}],
+                 "total_amount": products[3]["price"] * 2 + products[2]["price"], "status": "cancelled", "source": "woocommerce",
+                 "order_number": "ORD-20260408-F4G5H6"},
             ]
             
-            for order in demo_orders:
-                order["created_at"] = datetime.now(timezone.utc).isoformat()
-                order["updated_at"] = datetime.now(timezone.utc).isoformat()
+            days_offset = [0, 0, 0, 1, 2, 3, 4, 3, 5, 6, 7]
+            for i, order in enumerate(demo_orders):
+                order_date = datetime.now(timezone.utc) - timedelta(days=days_offset[i] if i < len(days_offset) else 0)
+                order["created_at"] = order_date.isoformat()
+                order["updated_at"] = order_date.isoformat()
+                order["status_history"] = [{"old_status": "new", "new_status": order["status"], "changed_by": "Système", "changed_at": order_date.isoformat()}]
                 await db.orders.insert_one(order)
                 logger.info(f"Order created: {order['order_number']}")
     

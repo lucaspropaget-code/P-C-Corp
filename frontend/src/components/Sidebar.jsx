@@ -49,7 +49,7 @@ export function Sidebar() {
   };
 
   const getLinks = () => {
-    if (user?.role === 'admin') return adminLinks;
+    if (user?.role === 'admin') return [...adminLinks, ...marketingLinks];
     if (user?.role === 'marketing') return marketingLinks;
     if (user?.role === 'stockeur') return stockeurLinks;
     return [];

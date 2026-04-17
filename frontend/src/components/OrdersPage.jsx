@@ -34,12 +34,23 @@ import {
   Eye,
   Filter,
   Package,
-  MapPin
+  MapPin,
+  History,
+  ArrowRight
 } from 'lucide-react';
 import { formatApiErrorDetail } from '../context/AuthContext';
 import { toast } from 'sonner';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
+
+const STATUS_LABELS = {
+  pending: 'En attente',
+  shipped: 'Expédiée',
+  delivered: 'Livrée',
+  cancelled: 'Annulée'
+};
+
+const ALL_STATUSES = ['pending', 'shipped', 'delivered', 'cancelled'];
 
 export function OrdersPage() {
   const [orders, setOrders] = useState([]);
@@ -49,6 +60,8 @@ export function OrdersPage() {
   const [search, setSearch] = useState('');
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [showNewOrder, setShowNewOrder] = useState(false);
+  const [orderHistory, setOrderHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
   const [newOrder, setNewOrder] = useState({
     customer_name: '',
     customer_email: '',
@@ -95,11 +108,23 @@ export function OrdersPage() {
         { status },
         { withCredentials: true }
       );
-      toast.success('Statut mis à jour');
+      toast.success(`Statut mis à jour : ${STATUS_LABELS[status] || status}`);
       fetchOrders();
       setSelectedOrder(null);
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
+  const fetchOrderHistory = async (orderId) => {
+    try {
+      const response = await axios.get(`${API_URL}/api/orders/${orderId}/history`, { withCredentials: true });
+      setOrderHistory(response.data);
+      setShowHistory(true);
+    } catch (err) {
+      console.error('Error fetching history:', err);
+      setOrderHistory([]);
+      setShowHistory(true);
     }
   };
 
@@ -477,6 +502,41 @@ export function OrdersPage() {
                                   </Button>
                                 </div>
                               )}
+
+                              {/* Full status control for admin */}
+                              <div className="pt-4 border-t border-border">
+                                <p className="text-sm text-muted-foreground mb-3">Changer le statut</p>
+                                <div className="grid grid-cols-2 gap-2">
+                                  {ALL_STATUSES.filter(s => s !== order.status).map(s => (
+                                    <Button
+                                      key={s}
+                                      variant="secondary"
+                                      className={`rounded-xl ${
+                                        s === 'pending' ? 'hover:bg-amber-500/20 hover:text-amber-500' :
+                                        s === 'shipped' ? 'hover:bg-blue-500/20 hover:text-blue-500' :
+                                        s === 'delivered' ? 'hover:bg-green-500/20 hover:text-green-500' :
+                                        'hover:bg-red-500/20 hover:text-red-500'
+                                      }`}
+                                      onClick={() => updateOrderStatus(order.id, s)}
+                                      data-testid={`set-status-${s}-${order.id}`}
+                                    >
+                                      <ArrowRight className="w-4 h-4 mr-1" />
+                                      {STATUS_LABELS[s]}
+                                    </Button>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {/* Status history button */}
+                              <Button 
+                                variant="ghost" 
+                                className="w-full mt-2 text-muted-foreground"
+                                onClick={() => fetchOrderHistory(order.id)}
+                                data-testid={`order-history-${order.id}`}
+                              >
+                                <History className="w-4 h-4 mr-2" />
+                                Voir l'historique des statuts
+                              </Button>
                             </div>
                           </DialogContent>
                         </Dialog>
@@ -489,6 +549,44 @@ export function OrdersPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Status History Dialog */}
+      <Dialog open={showHistory} onOpenChange={setShowHistory}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <History className="w-5 h-5 text-primary" />
+              Historique des statuts
+            </DialogTitle>
+          </DialogHeader>
+          <div className="max-h-96 overflow-y-auto">
+            {orderHistory.length === 0 ? (
+              <p className="text-center text-muted-foreground py-8">Aucun changement de statut enregistré</p>
+            ) : (
+              <div className="space-y-3 py-4">
+                {orderHistory.map((entry, i) => (
+                  <div key={i} className="flex items-center gap-3 p-3 rounded-lg bg-secondary/50">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 text-sm">
+                        {getStatusBadge(entry.old_status)}
+                        <ArrowRight className="w-4 h-4 text-muted-foreground" />
+                        {getStatusBadge(entry.new_status)}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Par <span className="font-medium text-foreground">{entry.changed_by}</span>
+                        {entry.changed_by_role && <span className="text-muted-foreground"> ({entry.changed_by_role})</span>}
+                      </p>
+                    </div>
+                    <p className="text-xs text-muted-foreground whitespace-nowrap">
+                      {new Date(entry.changed_at).toLocaleString('fr-FR')}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

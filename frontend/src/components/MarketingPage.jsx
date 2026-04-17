@@ -220,7 +220,6 @@ export function MarketingAIPage() {
   const [contentType, setContentType] = useState('social_post');
   const [generatedContent, setGeneratedContent] = useState('');
   const [generating, setGenerating] = useState(false);
-  const [savePlatform, setSavePlatform] = useState('instagram');
   const [saving, setSaving] = useState(false);
 
   const generateContent = async () => {
@@ -239,7 +238,7 @@ export function MarketingAIPage() {
       }, { withCredentials: true });
       
       setGeneratedContent(response.data.content);
-      toast.success('Contenu généré !');
+      toast.success('Contenu généré et sauvegardé en brouillon !');
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     } finally {
@@ -252,17 +251,17 @@ export function MarketingAIPage() {
     toast.success('Copié dans le presse-papier');
   };
 
-  const saveToSocial = async () => {
+  const saveToSocial = async (platform) => {
     setSaving(true);
     try {
       await axios.post(`${API_URL}/api/social/posts`, {
-        platform: savePlatform,
+        platform: platform,
         content: generatedContent,
         content_type: contentType,
         status: 'draft',
         ai_generated: true
       }, { withCredentials: true });
-      toast.success('Sauvegardé dans les brouillons réseaux sociaux');
+      toast.success(`Sauvegardé pour ${platform}`);
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     } finally {
@@ -360,23 +359,15 @@ export function MarketingAIPage() {
                 >
                   {generatedContent}
                 </div>
-                <div className="mt-4 p-4 rounded-xl bg-primary/5 border border-primary/20 space-y-3">
-                  <p className="text-sm font-medium">Sauvegarder dans les réseaux sociaux</p>
+                <div className="mt-4 p-4 rounded-xl bg-green-500/5 border border-green-500/20 space-y-3">
+                  <p className="text-sm font-medium text-green-500">Sauvegardé automatiquement en brouillon (Instagram)</p>
+                  <p className="text-xs text-muted-foreground">Dupliquer vers une autre plateforme :</p>
                   <div className="flex gap-2">
-                    <Select value={savePlatform} onValueChange={setSavePlatform}>
-                      <SelectTrigger className="bg-secondary flex-1">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="facebook">Facebook</SelectItem>
-                        <SelectItem value="instagram">Instagram</SelectItem>
-                        <SelectItem value="tiktok">TikTok</SelectItem>
-                        <SelectItem value="youtube">YouTube</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button onClick={saveToSocial} disabled={saving} className="btn-primary" data-testid="save-to-social-button">
-                      {saving ? 'Sauvegarde...' : 'Sauvegarder'}
-                    </Button>
+                    {['facebook', 'tiktok', 'youtube'].map(p => (
+                      <Button key={p} variant="secondary" size="sm" className="rounded-full capitalize" onClick={() => saveToSocial(p)} disabled={saving}>
+                        {p}
+                      </Button>
+                    ))}
                   </div>
                 </div>
               </>
