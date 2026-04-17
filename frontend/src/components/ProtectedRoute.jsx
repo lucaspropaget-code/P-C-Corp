@@ -26,6 +26,8 @@ export function ProtectedRoute({ children, allowedRoles = [] }) {
       return <Navigate to="/stockeur" replace />;
     } else if (user.role === 'marketing') {
       return <Navigate to="/marketing" replace />;
+    } else if (user.role === 'comptable') {
+      return <Navigate to="/comptable" replace />;
     } else {
       return <Navigate to="/dashboard" replace />;
     }

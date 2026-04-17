@@ -14,7 +14,10 @@ import {
   Truck,
   RefreshCw,
   Landmark,
-  Share2
+  Share2,
+  FileText,
+  Receipt,
+  Eye
 } from 'lucide-react';
 import { Button } from './ui/button';
 
@@ -23,6 +26,7 @@ const adminLinks = [
   { to: '/orders', icon: ShoppingCart, label: 'Commandes' },
   { to: '/stock', icon: Package, label: 'Stocks' },
   { to: '/customers', icon: Users, label: 'Clients' },
+  { to: '/invoices', icon: FileText, label: 'Facturation' },
   { to: '/accounting', icon: Calculator, label: 'Comptabilité' },
   { to: '/bank', icon: Landmark, label: 'Banque' },
   { to: '/woo-sync', icon: RefreshCw, label: 'Synchro WooCommerce' },
@@ -39,6 +43,10 @@ const stockeurLinks = [
   { to: '/stockeur', icon: Truck, label: 'Expéditions' },
 ];
 
+const comptableLinks = [
+  { to: '/comptable', icon: Eye, label: 'Espace Comptable' },
+];
+
 export function Sidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -52,6 +60,7 @@ export function Sidebar() {
     if (user?.role === 'admin') return [...adminLinks, ...marketingLinks];
     if (user?.role === 'marketing') return marketingLinks;
     if (user?.role === 'stockeur') return stockeurLinks;
+    if (user?.role === 'comptable') return comptableLinks;
     return [];
   };
 

@@ -14,6 +14,8 @@ import { StockeurPage } from "./components/StockeurPage";
 import { BankReconciliationPage } from "./components/BankReconciliationPage";
 import { WooCommerceSyncPage } from "./components/WooCommerceSyncPage";
 import { SocialDashboardPage } from "./components/SocialDashboardPage";
+import { InvoicesPage } from "./components/InvoicesPage";
+import { ComptableDashboard } from "./components/ComptableDashboard";
 import { Toaster } from "./components/ui/sonner";
 import "./App.css";
 
@@ -29,6 +31,8 @@ function RoleBasedRedirect() {
       return <Navigate to="/dashboard" replace />;
     case 'marketing':
       return <Navigate to="/marketing" replace />;
+    case 'comptable':
+      return <Navigate to="/comptable" replace />;
     case 'stockeur':
       return <Navigate to="/stockeur" replace />;
     default:
@@ -109,6 +113,24 @@ function App() {
             element={
               <ProtectedRoute allowedRoles={['admin']}>
                 <Layout><WooCommerceSyncPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/invoices"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <Layout><InvoicesPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          
+          {/* Comptable Routes */}
+          <Route
+            path="/comptable"
+            element={
+              <ProtectedRoute allowedRoles={['comptable', 'admin']}>
+                <Layout><ComptableDashboard /></Layout>
               </ProtectedRoute>
             }
           />

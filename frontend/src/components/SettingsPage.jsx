@@ -11,7 +11,8 @@ import {
   Link,
   CheckCircle,
   AlertCircle,
-  Loader2
+  Loader2,
+  User
 } from 'lucide-react';
 import { formatApiErrorDetail } from '../context/AuthContext';
 import { toast } from 'sonner';
@@ -24,24 +25,51 @@ export function SettingsPage() {
     consumer_key: '',
     consumer_secret: ''
   });
+  const [comptable, setComptable] = useState({ email: '', password: '', name: '' });
+  const [comptableLoaded, setComptableLoaded] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingComptable, setSavingComptable] = useState(false);
 
   useEffect(() => {
     fetchConfig();
+    fetchComptable();
   }, []);
 
   const fetchConfig = async () => {
     try {
       const response = await axios.get(`${API_URL}/api/settings/woocommerce`, { withCredentials: true });
+      if (response.data) setWooConfig(response.data);
+    } catch (err) { console.error('Error fetching config:', err); }
+    finally { setLoading(false); }
+  };
+
+  const fetchComptable = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/admin/comptable`, { withCredentials: true });
       if (response.data) {
-        setWooConfig(response.data);
+        setComptableLoaded(response.data);
+        setComptable({ email: response.data.email || '', password: '', name: response.data.name || '' });
       }
-    } catch (err) {
-      console.error('Error fetching config:', err);
-    } finally {
-      setLoading(false);
-    }
+    } catch (err) { console.error('Error fetching comptable:', err); }
+  };
+
+  const saveComptable = async () => {
+    setSavingComptable(true);
+    try {
+      const data = {};
+      if (comptable.email && comptable.email !== comptableLoaded?.email) data.email = comptable.email;
+      if (comptable.name && comptable.name !== comptableLoaded?.name) data.name = comptable.name;
+      if (comptable.password) data.password = comptable.password;
+      
+      if (Object.keys(data).length === 0) { toast.error('Aucune modification'); setSavingComptable(false); return; }
+      
+      await axios.put(`${API_URL}/api/admin/comptable`, data, { withCredentials: true });
+      toast.success('Compte comptable mis à jour');
+      setComptable({ ...comptable, password: '' });
+      fetchComptable();
+    } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }
+    finally { setSavingComptable(false); }
   };
 
   const saveConfig = async () => {
@@ -193,6 +221,38 @@ export function SettingsPage() {
               </p>
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Comptable Account */}
+      <Card className="border-border">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <User className="w-5 h-5 text-primary" />
+            Compte Comptable
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Gérez l'accès lecture seule pour votre comptable aux factures et rapprochements bancaires.
+          </p>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Nom</Label>
+              <Input value={comptable.name} onChange={e => setComptable({...comptable, name: e.target.value})} className="bg-secondary" data-testid="comptable-name" />
+            </div>
+            <div className="space-y-2">
+              <Label>Email</Label>
+              <Input value={comptable.email} onChange={e => setComptable({...comptable, email: e.target.value})} className="bg-secondary" data-testid="comptable-email" />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Nouveau mot de passe (laisser vide si inchangé)</Label>
+            <Input type="password" value={comptable.password} onChange={e => setComptable({...comptable, password: e.target.value})} placeholder="••••••••" className="bg-secondary" data-testid="comptable-password" />
+          </div>
+          <Button onClick={saveComptable} disabled={savingComptable} className="btn-primary" data-testid="save-comptable">
+            {savingComptable ? 'Enregistrement...' : 'Mettre à jour le compte'}
+          </Button>
         </CardContent>
       </Card>
     </div>

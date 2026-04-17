@@ -222,6 +222,46 @@ class SocialMetricsUpdate(BaseModel):
     views: Optional[int] = 0
     reach: Optional[int] = 0
 
+# --- Invoice Models ---
+class SalesInvoiceItem(BaseModel):
+    description: str
+    quantity: int = 1
+    unit_price_ht: float
+    tva_rate: float = 20.0
+
+class SalesInvoiceCreate(BaseModel):
+    customer_name: str
+    customer_email: Optional[str] = ""
+    customer_address: Optional[str] = ""
+    items: List[dict]
+    tva_rate: float = 20.0
+    notes: Optional[str] = ""
+    status: str = "draft"  # draft, sent, paid, unpaid
+
+class SalesInvoiceUpdate(BaseModel):
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+class PurchaseInvoiceCreate(BaseModel):
+    supplier: str
+    date: Optional[str] = None
+    amount_ht: float
+    tva_rate: float = 20.0
+    category: str = "other"  # stock, general, other
+    description: Optional[str] = ""
+    status: str = "to_pay"  # to_pay, paid
+    reference: Optional[str] = ""
+
+class PurchaseInvoiceUpdate(BaseModel):
+    status: Optional[str] = None
+    supplier: Optional[str] = None
+    description: Optional[str] = None
+
+class ComptableAccountUpdate(BaseModel):
+    email: Optional[str] = None
+    password: Optional[str] = None
+    name: Optional[str] = None
+
 # Auth Endpoints
 @api_router.post("/auth/login")
 async def login(request: LoginRequest, response: Response):
@@ -718,9 +758,453 @@ Tu rédiges des emails marketing professionnels et engageants pour promouvoir le
         logging.error(f"AI Generation error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erreur de génération: {str(e)}")
 
-# Bank Reconciliation - Advanced
+# ========= INVOICING =========
+
+async def _get_next_invoice_number(prefix: str, year: int):
+    """Auto-increment invoice number: FA-2026-0001 or FAA-2026-0001"""
+    last = await db.invoices.find({"number": {"$regex": f"^{prefix}-{year}"}}).sort("number", -1).limit(1).to_list(1)
+    if last:
+        last_num = int(last[0]["number"].split("-")[-1])
+        return f"{prefix}-{year}-{str(last_num + 1).zfill(4)}"
+    return f"{prefix}-{year}-0001"
+
+# Sales Invoices
+@api_router.get("/invoices/sales")
+async def get_sales_invoices(month: Optional[str] = None, status: Optional[str] = None, user: dict = Depends(require_role(["admin", "comptable"]))):
+    query = {"type": "sales"}
+    if month:
+        query["date"] = {"$regex": f"^{month}"}
+    if status:
+        query["status"] = status
+    invoices = await db.invoices.find(query).sort("created_at", -1).to_list(1000)
+    return [{"id": str(inv["_id"]), **{k:v for k,v in inv.items() if k != "_id"}} for inv in invoices]
+
+@api_router.post("/invoices/sales")
+async def create_sales_invoice(invoice: SalesInvoiceCreate, user: dict = Depends(require_role(["admin"]))):
+    now = datetime.now(timezone.utc)
+    number = await _get_next_invoice_number("FA", now.year)
+    
+    # Calculate totals
+    total_ht = 0
+    items_with_totals = []
+    for item in invoice.items:
+        qty = item.get("quantity", 1)
+        price = item.get("unit_price_ht", 0)
+        tva = item.get("tva_rate", invoice.tva_rate)
+        line_ht = qty * price
+        line_tva = line_ht * tva / 100
+        items_with_totals.append({**item, "line_total_ht": line_ht, "line_tva": line_tva, "line_total_ttc": line_ht + line_tva})
+        total_ht += line_ht
+    
+    total_tva = total_ht * invoice.tva_rate / 100
+    total_ttc = total_ht + total_tva
+    
+    inv_dict = {
+        "type": "sales",
+        "number": number,
+        "date": now.strftime("%Y-%m-%d"),
+        "customer_name": invoice.customer_name,
+        "customer_email": invoice.customer_email,
+        "customer_address": invoice.customer_address,
+        "items": items_with_totals,
+        "total_ht": round(total_ht, 2),
+        "tva_rate": invoice.tva_rate,
+        "total_tva": round(total_tva, 2),
+        "total_ttc": round(total_ttc, 2),
+        "status": invoice.status,
+        "notes": invoice.notes,
+        "created_at": now.isoformat(),
+        "created_by": user["name"],
+        "updated_at": now.isoformat()
+    }
+    
+    result = await db.invoices.insert_one(inv_dict)
+    inv_dict.pop("_id", None)
+    return {"id": str(result.inserted_id), **inv_dict}
+
+@api_router.put("/invoices/sales/{invoice_id}")
+async def update_sales_invoice(invoice_id: str, update: SalesInvoiceUpdate, user: dict = Depends(require_role(["admin"]))):
+    update_data = {k: v for k, v in update.model_dump().items() if v is not None}
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.invoices.update_one({"_id": ObjectId(invoice_id)}, {"$set": update_data})
+    return {"message": "Facture mise à jour"}
+
+@api_router.delete("/invoices/sales/{invoice_id}")
+async def delete_sales_invoice(invoice_id: str, user: dict = Depends(require_role(["admin"]))):
+    inv = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    if inv and inv.get("status") not in ["draft", "importee"]:
+        raise HTTPException(status_code=400, detail="Seuls les brouillons peuvent être supprimés")
+    await db.invoices.delete_one({"_id": ObjectId(invoice_id)})
+    return {"message": "Facture supprimée"}
+
+# PDF Generation for sales invoice
+@api_router.get("/invoices/sales/{invoice_id}/pdf")
+async def generate_sales_invoice_pdf(invoice_id: str, user: dict = Depends(require_role(["admin", "comptable"]))):
+    from fpdf import FPDF
+    
+    inv = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Facture non trouvée")
+    
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    
+    # Header
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.cell(0, 12, "ASSAULT58", ln=True)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 6, "Lampes torches tactiques", ln=True)
+    pdf.cell(0, 6, "assault58.com", ln=True)
+    pdf.ln(10)
+    
+    # Invoice info
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, f"FACTURE {inv['number']}", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 7, f"Date : {inv['date']}", ln=True)
+    status_labels = {"draft": "Brouillon", "sent": "Envoyee", "paid": "Payee", "unpaid": "Impayee", "importee": "Importee"}
+    pdf.cell(0, 7, f"Statut : {status_labels.get(inv['status'], inv['status'])}", ln=True)
+    pdf.ln(8)
+    
+    # Customer
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 7, "Client :", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 6, inv.get("customer_name", ""), ln=True)
+    if inv.get("customer_email"):
+        pdf.cell(0, 6, inv["customer_email"], ln=True)
+    if inv.get("customer_address"):
+        pdf.cell(0, 6, inv["customer_address"], ln=True)
+    pdf.ln(10)
+    
+    # Table header
+    pdf.set_fill_color(40, 40, 40)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(80, 8, "Description", 1, 0, "L", True)
+    pdf.cell(20, 8, "Qte", 1, 0, "C", True)
+    pdf.cell(30, 8, "Prix HT", 1, 0, "R", True)
+    pdf.cell(25, 8, "TVA %", 1, 0, "R", True)
+    pdf.cell(35, 8, "Total TTC", 1, 1, "R", True)
+    
+    # Items
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Helvetica", "", 10)
+    for item in inv.get("items", []):
+        desc = item.get("description", "")[:40]
+        qty = str(item.get("quantity", 1))
+        price = f"{item.get('unit_price_ht', 0):.2f} EUR"
+        tva = f"{item.get('tva_rate', inv.get('tva_rate', 20))}%"
+        total = f"{item.get('line_total_ttc', 0):.2f} EUR"
+        pdf.cell(80, 7, desc, 1, 0, "L")
+        pdf.cell(20, 7, qty, 1, 0, "C")
+        pdf.cell(30, 7, price, 1, 0, "R")
+        pdf.cell(25, 7, tva, 1, 0, "R")
+        pdf.cell(35, 7, total, 1, 1, "R")
+    
+    pdf.ln(5)
+    
+    # Totals
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(130, 8, "Total HT :", 0, 0, "R")
+    pdf.cell(35, 8, f"{inv.get('total_ht', 0):.2f} EUR", 0, 1, "R")
+    pdf.cell(130, 8, f"TVA ({inv.get('tva_rate', 20)}%) :", 0, 0, "R")
+    pdf.cell(35, 8, f"{inv.get('total_tva', 0):.2f} EUR", 0, 1, "R")
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(130, 10, "Total TTC :", 0, 0, "R")
+    pdf.cell(35, 10, f"{inv.get('total_ttc', 0):.2f} EUR", 0, 1, "R")
+    
+    if inv.get("notes"):
+        pdf.ln(10)
+        pdf.set_font("Helvetica", "I", 9)
+        pdf.multi_cell(0, 5, f"Notes : {inv['notes']}")
+    
+    output = io.BytesIO()
+    pdf_content = pdf.output()
+    output.write(pdf_content)
+    output.seek(0)
+    
+    return StreamingResponse(output, media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=facture_{inv['number']}.pdf"})
+
+# Purchase Invoices
+@api_router.get("/invoices/purchases")
+async def get_purchase_invoices(month: Optional[str] = None, status: Optional[str] = None, user: dict = Depends(require_role(["admin", "comptable"]))):
+    query = {"type": "purchase"}
+    if month:
+        query["date"] = {"$regex": f"^{month}"}
+    if status:
+        query["status"] = status
+    invoices = await db.invoices.find(query).sort("created_at", -1).to_list(1000)
+    return [{"id": str(inv["_id"]), **{k:v for k,v in inv.items() if k != "_id"}} for inv in invoices]
+
+@api_router.post("/invoices/purchases")
+async def create_purchase_invoice(invoice: PurchaseInvoiceCreate, user: dict = Depends(require_role(["admin"]))):
+    now = datetime.now(timezone.utc)
+    number = await _get_next_invoice_number("FAA", now.year)
+    
+    total_tva = invoice.amount_ht * invoice.tva_rate / 100
+    total_ttc = invoice.amount_ht + total_tva
+    
+    inv_dict = {
+        "type": "purchase",
+        "number": number,
+        "date": invoice.date or now.strftime("%Y-%m-%d"),
+        "supplier": invoice.supplier,
+        "description": invoice.description,
+        "amount_ht": round(invoice.amount_ht, 2),
+        "tva_rate": invoice.tva_rate,
+        "total_tva": round(total_tva, 2),
+        "total_ttc": round(total_ttc, 2),
+        "category": invoice.category,
+        "status": invoice.status,
+        "reference": invoice.reference,
+        "created_at": now.isoformat(),
+        "created_by": user["name"],
+        "updated_at": now.isoformat()
+    }
+    
+    result = await db.invoices.insert_one(inv_dict)
+    inv_dict.pop("_id", None)
+    return {"id": str(result.inserted_id), **inv_dict}
+
+@api_router.put("/invoices/purchases/{invoice_id}")
+async def update_purchase_invoice(invoice_id: str, update: PurchaseInvoiceUpdate, user: dict = Depends(require_role(["admin"]))):
+    update_data = {k: v for k, v in update.model_dump().items() if v is not None}
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.invoices.update_one({"_id": ObjectId(invoice_id)}, {"$set": update_data})
+    return {"message": "Facture achat mise à jour"}
+
+@api_router.delete("/invoices/purchases/{invoice_id}")
+async def delete_purchase_invoice(invoice_id: str, user: dict = Depends(require_role(["admin"]))):
+    await db.invoices.delete_one({"_id": ObjectId(invoice_id)})
+    return {"message": "Facture achat supprimée"}
+
+# Import invoices (CSV + PDF)
+@api_router.post("/invoices/import-csv")
+async def import_invoices_csv(file: UploadFile = File(...), invoice_type: str = "purchase", user: dict = Depends(require_role(["admin"]))):
+    content = await file.read()
+    text = content.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text), delimiter=";")
+    
+    imported = 0
+    now = datetime.now(timezone.utc)
+    
+    for row in reader:
+        try:
+            if invoice_type == "purchase":
+                number = await _get_next_invoice_number("FAA", now.year)
+                amount_ht = float((row.get("Montant HT") or row.get("montant_ht") or row.get("HT") or "0").replace(",", ".").strip())
+                tva_rate = float((row.get("TVA") or row.get("tva") or "20").replace(",", ".").replace("%", "").strip())
+                
+                inv = {
+                    "type": "purchase",
+                    "number": number,
+                    "date": (row.get("Date") or row.get("date") or now.strftime("%Y-%m-%d")).strip(),
+                    "supplier": (row.get("Fournisseur") or row.get("supplier") or "").strip(),
+                    "description": (row.get("Description") or row.get("description") or "").strip(),
+                    "amount_ht": amount_ht,
+                    "tva_rate": tva_rate,
+                    "total_tva": round(amount_ht * tva_rate / 100, 2),
+                    "total_ttc": round(amount_ht * (1 + tva_rate / 100), 2),
+                    "category": (row.get("Catégorie") or row.get("category") or "other").strip(),
+                    "status": "importee",
+                    "reference": (row.get("Référence") or row.get("reference") or "").strip(),
+                    "created_at": now.isoformat(),
+                    "created_by": user["name"],
+                    "updated_at": now.isoformat()
+                }
+            else:
+                number = await _get_next_invoice_number("FA", now.year)
+                total_ht = float((row.get("Montant HT") or row.get("HT") or "0").replace(",", ".").strip())
+                tva_rate = float((row.get("TVA") or "20").replace(",", ".").replace("%", "").strip())
+                
+                inv = {
+                    "type": "sales",
+                    "number": number,
+                    "date": (row.get("Date") or now.strftime("%Y-%m-%d")).strip(),
+                    "customer_name": (row.get("Client") or row.get("customer") or "").strip(),
+                    "customer_email": "",
+                    "customer_address": "",
+                    "items": [{"description": (row.get("Description") or "Importé").strip(), "quantity": 1, "unit_price_ht": total_ht, "tva_rate": tva_rate}],
+                    "total_ht": total_ht,
+                    "tva_rate": tva_rate,
+                    "total_tva": round(total_ht * tva_rate / 100, 2),
+                    "total_ttc": round(total_ht * (1 + tva_rate / 100), 2),
+                    "status": "importee",
+                    "notes": "",
+                    "created_at": now.isoformat(),
+                    "created_by": user["name"],
+                    "updated_at": now.isoformat()
+                }
+            
+            await db.invoices.insert_one(inv)
+            imported += 1
+        except Exception as e:
+            logging.error(f"Import error: {e}")
+    
+    return {"imported": imported}
+
+@api_router.post("/invoices/import-pdf")
+async def import_invoice_pdf(file: UploadFile = File(...), user: dict = Depends(require_role(["admin"]))):
+    """Extract invoice data from PDF using AI"""
+    content = await file.read()
+    
+    # Convert PDF to text
+    import subprocess
+    import tempfile
+    
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    
+    try:
+        result = subprocess.run(["pdftotext", "-layout", tmp_path, "-"], capture_output=True, text=True, timeout=15)
+        pdf_text = result.stdout[:3000] if result.returncode == 0 else ""
+    except Exception:
+        pdf_text = ""
+    finally:
+        os.unlink(tmp_path)
+    
+    if not pdf_text.strip():
+        raise HTTPException(status_code=400, detail="Impossible de lire le PDF. Vérifiez le fichier.")
+    
+    # Use AI to extract invoice data
+    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Clé API LLM non configurée")
+    
+    chat = LlmChat(
+        api_key=api_key,
+        session_id=f"invoice-extract-{datetime.now().timestamp()}",
+        system_message="""Tu es un assistant d'extraction de données de factures. Extrais les informations de la facture et retourne UNIQUEMENT un JSON valide avec ces champs:
+{"supplier": "nom fournisseur", "date": "YYYY-MM-DD", "amount_ht": 0.00, "tva_rate": 20.0, "total_ttc": 0.00, "description": "description courte", "reference": "ref facture"}
+Si un champ est introuvable, utilise une valeur par défaut. Retourne UNIQUEMENT le JSON, sans texte autour."""
+    ).with_model("openai", "gpt-5.2")
+    
+    user_message = UserMessage(text=f"Extrais les données de cette facture:\n\n{pdf_text}")
+    ai_response = await chat.send_message(user_message)
+    
+    # Parse AI response
+    try:
+        # Clean response - find JSON
+        json_str = ai_response.strip()
+        if "```" in json_str:
+            json_str = json_str.split("```")[1].replace("json", "").strip()
+        extracted = json.loads(json_str)
+    except Exception:
+        return {"extracted": None, "raw_text": pdf_text[:500], "error": "Extraction IA échouée. Vérifiez manuellement."}
+    
+    # Create the invoice
+    now = datetime.now(timezone.utc)
+    number = await _get_next_invoice_number("FAA", now.year)
+    amount_ht = float(extracted.get("amount_ht", 0))
+    tva_rate = float(extracted.get("tva_rate", 20))
+    
+    inv = {
+        "type": "purchase",
+        "number": number,
+        "date": extracted.get("date", now.strftime("%Y-%m-%d")),
+        "supplier": extracted.get("supplier", "Inconnu"),
+        "description": extracted.get("description", "Facture importée PDF"),
+        "amount_ht": round(amount_ht, 2),
+        "tva_rate": tva_rate,
+        "total_tva": round(amount_ht * tva_rate / 100, 2),
+        "total_ttc": round(float(extracted.get("total_ttc", amount_ht * (1 + tva_rate / 100))), 2),
+        "category": "other",
+        "status": "importee",
+        "reference": extracted.get("reference", ""),
+        "created_at": now.isoformat(),
+        "created_by": user["name"],
+        "updated_at": now.isoformat()
+    }
+    
+    result = await db.invoices.insert_one(inv)
+    inv.pop("_id", None)
+    return {"id": str(result.inserted_id), "extracted": extracted, **inv}
+
+# ========= Comptable Management =========
+@api_router.get("/admin/comptable")
+async def get_comptable_account(user: dict = Depends(require_role(["admin"]))):
+    comptable = await db.users.find_one({"role": "comptable"}, {"password_hash": 0})
+    if not comptable:
+        return None
+    return {"id": str(comptable["_id"]), **{k:v for k,v in comptable.items() if k != "_id"}}
+
+@api_router.put("/admin/comptable")
+async def update_comptable_account(update: ComptableAccountUpdate, user: dict = Depends(require_role(["admin"]))):
+    comptable = await db.users.find_one({"role": "comptable"})
+    if not comptable:
+        raise HTTPException(status_code=404, detail="Compte comptable non trouvé")
+    
+    update_data = {}
+    if update.email:
+        update_data["email"] = update.email.lower()
+    if update.name:
+        update_data["name"] = update.name
+    if update.password:
+        update_data["password_hash"] = hash_password(update.password)
+    
+    if update_data:
+        await db.users.update_one({"_id": comptable["_id"]}, {"$set": update_data})
+    
+    return {"message": "Compte comptable mis à jour"}
+
+# Comptable export - all financial data
+@api_router.get("/comptable/export")
+async def comptable_export(month: str, user: dict = Depends(require_role(["admin", "comptable"]))):
+    import pandas as pd
+    
+    # Sales invoices
+    sales = await db.invoices.find({"type": "sales", "date": {"$regex": f"^{month}"}}).to_list(1000)
+    # Purchase invoices
+    purchases = await db.invoices.find({"type": "purchase", "date": {"$regex": f"^{month}"}}).to_list(1000)
+    # Bank transactions (matched only)
+    bank_txns = await db.bank_transactions.find({"date": {"$regex": f"^{month}"}, "match_status": "matched"}).to_list(1000)
+    
+    status_map = {"draft": "Brouillon", "sent": "Envoyée", "paid": "Payée", "unpaid": "Impayée", "to_pay": "À payer", "importee": "Importée"}
+    
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # All transactions combined
+        all_rows = []
+        for s in sales:
+            all_rows.append({"Date": s.get("date", ""), "Type": "Vente", "N° Facture": s.get("number", ""), "Description": s.get("customer_name", ""), "HT": s.get("total_ht", 0), "TVA": s.get("total_tva", 0), "TTC": s.get("total_ttc", 0), "Statut": status_map.get(s.get("status", ""), s.get("status", ""))})
+        for p in purchases:
+            all_rows.append({"Date": p.get("date", ""), "Type": "Achat", "N° Facture": p.get("number", ""), "Description": f"{p.get('supplier', '')} - {p.get('description', '')}", "HT": p.get("amount_ht", 0), "TVA": p.get("total_tva", 0), "TTC": p.get("total_ttc", 0), "Statut": status_map.get(p.get("status", ""), p.get("status", ""))})
+        
+        if all_rows:
+            pd.DataFrame(all_rows).to_excel(writer, sheet_name="Toutes factures", index=False)
+        
+        # Sales only
+        if sales:
+            sales_data = [{"Date": s.get("date", ""), "N° Facture": s.get("number", ""), "Client": s.get("customer_name", ""), "HT": s.get("total_ht", 0), "TVA": s.get("total_tva", 0), "TTC": s.get("total_ttc", 0), "Statut": status_map.get(s.get("status", ""), "")} for s in sales]
+            pd.DataFrame(sales_data).to_excel(writer, sheet_name="Factures ventes", index=False)
+        
+        # Purchases only
+        if purchases:
+            purch_data = [{"Date": p.get("date", ""), "N° Facture": p.get("number", ""), "Fournisseur": p.get("supplier", ""), "Description": p.get("description", ""), "HT": p.get("amount_ht", 0), "TVA": p.get("total_tva", 0), "TTC": p.get("total_ttc", 0), "Catégorie": p.get("category", ""), "Statut": status_map.get(p.get("status", ""), "")} for p in purchases]
+            pd.DataFrame(purch_data).to_excel(writer, sheet_name="Factures achats", index=False)
+        
+        # Bank reconciliation
+        if bank_txns:
+            bank_data = [{"Date": t.get("date", ""), "Description": t.get("description", ""), "Type": t.get("transaction_type", ""), "Montant": t.get("amount", 0), "Référence": t.get("reference", ""), "Rapprochement": t.get("match_type", "")} for t in bank_txns]
+            pd.DataFrame(bank_data).to_excel(writer, sheet_name="Rapprochement bancaire", index=False)
+        
+        # Summary
+        total_sales = sum(s.get("total_ttc", 0) for s in sales)
+        total_purchases = sum(p.get("total_ttc", 0) for p in purchases)
+        summary = [{"Mois": month, "Total ventes TTC": total_sales, "Total achats TTC": total_purchases, "Solde": total_sales - total_purchases}]
+        pd.DataFrame(summary).to_excel(writer, sheet_name="Résumé", index=False)
+    
+    output.seek(0)
+    return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=comptabilite_complete_{month}.xlsx"})
+
+# Bank Reconciliation - Advanced (updated with lock)
 @api_router.get("/accounting/bank-transactions")
-async def get_bank_transactions(month: Optional[str] = None, status: Optional[str] = None, user: dict = Depends(require_role(["admin"]))):
+async def get_bank_transactions(month: Optional[str] = None, status: Optional[str] = None, user: dict = Depends(require_role(["admin", "comptable"]))):
     query = {}
     if month:
         query["date"] = {"$regex": f"^{month}"}
@@ -793,6 +1277,10 @@ async def import_bank_csv(file: UploadFile = File(...), user: dict = Depends(req
 
 @api_router.put("/accounting/bank-transactions/{txn_id}/match")
 async def match_bank_transaction(txn_id: str, match: BankTransactionMatch, user: dict = Depends(require_role(["admin"]))):
+    # Check if locked
+    txn = await db.bank_transactions.find_one({"_id": ObjectId(txn_id)})
+    if txn and txn.get("locked"):
+        raise HTTPException(status_code=400, detail="Cette transaction est verrouillée (rapprochement validé)")
     update_data = {
         "match_type": match.match_type,
         "match_id": match.match_id,
@@ -805,20 +1293,31 @@ async def match_bank_transaction(txn_id: str, match: BankTransactionMatch, user:
 
 @api_router.delete("/accounting/bank-transactions/{txn_id}")
 async def delete_bank_transaction(txn_id: str, user: dict = Depends(require_role(["admin"]))):
+    txn = await db.bank_transactions.find_one({"_id": ObjectId(txn_id)})
+    if txn and txn.get("locked"):
+        raise HTTPException(status_code=400, detail="Cette transaction est verrouillée")
     await db.bank_transactions.delete_one({"_id": ObjectId(txn_id)})
     return {"message": "Transaction supprimée"}
 
+@api_router.post("/accounting/bank-transactions/lock")
+async def lock_bank_transactions(month: str, user: dict = Depends(require_role(["admin"]))):
+    """Validate and lock all matched transactions for a month"""
+    result = await db.bank_transactions.update_many(
+        {"date": {"$regex": f"^{month}"}, "match_status": "matched"},
+        {"$set": {"locked": True, "locked_at": datetime.now(timezone.utc).isoformat(), "locked_by": user["name"]}}
+    )
+    return {"message": f"{result.modified_count} transactions verrouillées"}
+
 @api_router.get("/accounting/reconciliation-summary")
-async def get_reconciliation_summary(month: str, user: dict = Depends(require_role(["admin"]))):
-    # Get bank transactions for month
+async def get_reconciliation_summary(month: str, user: dict = Depends(require_role(["admin", "comptable"]))):
     bank_txns = await db.bank_transactions.find({"date": {"$regex": f"^{month}"}}).to_list(1000)
     
     total_bank_credits = sum(t["amount"] for t in bank_txns if t["transaction_type"] == "credit")
     total_bank_debits = sum(t["amount"] for t in bank_txns if t["transaction_type"] == "debit")
     matched_count = sum(1 for t in bank_txns if t.get("match_status") == "matched")
     unmatched_count = sum(1 for t in bank_txns if t.get("match_status") != "matched")
+    locked_count = sum(1 for t in bank_txns if t.get("locked"))
     
-    # Get system data for comparison
     orders = await db.orders.find({"created_at": {"$regex": f"^{month}"}, "status": {"$ne": "cancelled"}}).to_list(1000)
     expenses = await db.expenses.find({"date": {"$regex": f"^{month}"}}).to_list(1000)
     
@@ -832,6 +1331,7 @@ async def get_reconciliation_summary(month: str, user: dict = Depends(require_ro
         "difference": (total_bank_credits - total_bank_debits) - (system_revenue - system_expenses),
         "matched": matched_count,
         "unmatched": unmatched_count,
+        "locked": locked_count,
         "total_transactions": len(bank_txns)
     }
 
@@ -1162,7 +1662,8 @@ async def startup_event():
     users_to_seed = [
         {"email": os.environ.get("ADMIN_EMAIL", "admin@assault58.com"), "password": os.environ.get("ADMIN_PASSWORD", "Admin58!Secure"), "name": "Administrateur", "role": "admin"},
         {"email": os.environ.get("STOCKEUR_EMAIL", "stockeur@leac.com"), "password": os.environ.get("STOCKEUR_PASSWORD", "Stockeur58!Leac"), "name": "Équipe Léac", "role": "stockeur"},
-        {"email": os.environ.get("MARKETING_EMAIL", "marketing@assault58.com"), "password": os.environ.get("MARKETING_PASSWORD", "Marketing58!Pro"), "name": "Marketing Assault58", "role": "marketing"}
+        {"email": os.environ.get("MARKETING_EMAIL", "marketing@assault58.com"), "password": os.environ.get("MARKETING_PASSWORD", "Marketing58!Pro"), "name": "Marketing Assault58", "role": "marketing"},
+        {"email": os.environ.get("COMPTABLE_EMAIL", "comptable@assault58.com"), "password": os.environ.get("COMPTABLE_PASSWORD", "Comptable58!Pro"), "name": "Comptable", "role": "comptable"}
     ]
     
     for user_data in users_to_seed:
@@ -1301,6 +1802,10 @@ async def startup_event():
         f.write(f"- Email: {os.environ.get('MARKETING_EMAIL', 'marketing@assault58.com')}\n")
         f.write(f"- Password: {os.environ.get('MARKETING_PASSWORD', 'Marketing58!Pro')}\n")
         f.write("- Role: marketing\n\n")
+        f.write("## Comptable Account\n")
+        f.write(f"- Email: {os.environ.get('COMPTABLE_EMAIL', 'comptable@assault58.com')}\n")
+        f.write(f"- Password: {os.environ.get('COMPTABLE_PASSWORD', 'Comptable58!Pro')}\n")
+        f.write("- Role: comptable\n\n")
         f.write("## Auth Endpoints\n")
         f.write("- POST /api/auth/login\n")
         f.write("- POST /api/auth/logout\n")

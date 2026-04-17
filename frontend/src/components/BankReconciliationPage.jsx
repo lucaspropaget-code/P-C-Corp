@@ -40,7 +40,8 @@ import {
   ArrowUpDown,
   Wallet,
   TrendingUp,
-  TrendingDown
+  TrendingDown,
+  Lock
 } from 'lucide-react';
 import { formatApiErrorDetail } from '../context/AuthContext';
 import { toast } from 'sonner';
@@ -155,6 +156,17 @@ export function BankReconciliationPage() {
     try {
       await axios.delete(`${API_URL}/api/accounting/bank-transactions/${txnId}`, { withCredentials: true });
       toast.success('Transaction supprimée');
+      fetchData();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
+  const lockMonth = async () => {
+    if (!window.confirm(`Verrouiller toutes les transactions rapprochées du mois ? Cette action est irréversible.`)) return;
+    try {
+      const res = await axios.post(`${API_URL}/api/accounting/bank-transactions/lock?month=${selectedMonth}`, {}, { withCredentials: true });
+      toast.success(res.data.message);
       fetchData();
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
@@ -298,13 +310,20 @@ export function BankReconciliationPage() {
         </div>
       )}
 
-      {/* Filters */}
-      <div className="flex gap-2">
+      {/* Filters + Lock */}
+      <div className="flex gap-2 flex-wrap items-center">
         {['all', 'unmatched', 'matched'].map(s => (
           <Button key={s} variant={filterStatus === s ? 'default' : 'secondary'} className={`rounded-full ${filterStatus === s ? 'bg-primary text-black' : ''}`} onClick={() => setFilterStatus(s)}>
             {s === 'all' ? 'Toutes' : s === 'unmatched' ? 'Non rapprochées' : 'Rapprochées'}
           </Button>
         ))}
+        <div className="flex-1" />
+        {summary && summary.matched > 0 && (
+          <Button onClick={lockMonth} variant="secondary" className="rounded-full gap-2" data-testid="lock-reconciliation">
+            <Lock className="w-4 h-4" />
+            Valider et verrouiller ({summary.matched} transactions)
+          </Button>
+        )}
       </div>
 
       {/* Transactions table */}
@@ -340,13 +359,16 @@ export function BankReconciliationPage() {
                       </TableCell>
                       <TableCell>
                         {txn.match_status === 'matched' ? (
-                          <Badge className="bg-green-500/10 text-green-500 border-green-500/30">Rapprochée</Badge>
+                          <Badge className="bg-green-500/10 text-green-500 border-green-500/30">{txn.locked ? 'Verrouillée' : 'Rapprochée'}</Badge>
                         ) : (
                           <Badge className="bg-amber-500/10 text-amber-500 border-amber-500/30">Non rapprochée</Badge>
                         )}
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-1 justify-end">
+                          {txn.locked ? (
+                            <Lock className="w-4 h-4 text-green-500" />
+                          ) : (<>
                           {txn.match_status !== 'matched' && (
                             <Dialog>
                               <DialogTrigger asChild>
@@ -403,6 +425,7 @@ export function BankReconciliationPage() {
                           <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => deleteTransaction(txn.id)}>
                             <Trash2 className="w-4 h-4" />
                           </Button>
+                          </>)}
                         </div>
                       </TableCell>
                     </TableRow>
