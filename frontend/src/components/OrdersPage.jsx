@@ -36,7 +36,8 @@ import {
   Package,
   MapPin,
   History,
-  ArrowRight
+  ArrowRight,
+  FileText
 } from 'lucide-react';
 import { formatApiErrorDetail } from '../context/AuthContext';
 import { toast } from 'sonner';
@@ -125,6 +126,19 @@ export function OrdersPage() {
       console.error('Error fetching history:', err);
       setOrderHistory([]);
       setShowHistory(true);
+    }
+  };
+
+  const generateInvoice = async (orderId) => {
+    try {
+      const res = await axios.post(`${API_URL}/api/orders/${orderId}/generate-invoice`, {}, { withCredentials: true });
+      if (res.data.already_exists) {
+        toast.info(`Facture ${res.data.invoice_number} déjà existante`);
+      } else {
+        toast.success(`Facture ${res.data.invoice?.number} générée !`);
+      }
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
     }
   };
 
@@ -528,15 +542,26 @@ export function OrdersPage() {
                               </div>
 
                               {/* Status history button */}
-                              <Button 
-                                variant="ghost" 
-                                className="w-full mt-2 text-muted-foreground"
-                                onClick={() => fetchOrderHistory(order.id)}
-                                data-testid={`order-history-${order.id}`}
-                              >
-                                <History className="w-4 h-4 mr-2" />
-                                Voir l'historique des statuts
-                              </Button>
+                              <div className="flex gap-2 mt-2">
+                                <Button 
+                                  variant="ghost" 
+                                  className="flex-1 text-muted-foreground"
+                                  onClick={() => fetchOrderHistory(order.id)}
+                                  data-testid={`order-history-${order.id}`}
+                                >
+                                  <History className="w-4 h-4 mr-2" />
+                                  Historique statuts
+                                </Button>
+                                <Button 
+                                  variant="ghost" 
+                                  className="flex-1 text-primary"
+                                  onClick={() => generateInvoice(order.id)}
+                                  data-testid={`generate-invoice-${order.id}`}
+                                >
+                                  <FileText className="w-4 h-4 mr-2" />
+                                  Générer facture
+                                </Button>
+                              </div>
                             </div>
                           </DialogContent>
                         </Dialog>

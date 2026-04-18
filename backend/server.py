@@ -494,6 +494,15 @@ async def update_order_status(order_id: str, status_update: OrderStatusUpdate, r
     
     await db.orders.update_one({"_id": ObjectId(order_id)}, {"$set": update_data})
     
+    # Auto-generate invoice when delivered
+    if status_update.status == "delivered":
+        try:
+            order_fresh = await db.orders.find_one({"_id": ObjectId(order_id)})
+            await _generate_invoice_from_order(order_fresh, created_by=user["name"])
+            logging.info(f"Auto-generated invoice for order {order_id}")
+        except Exception as e:
+            logging.error(f"Auto-invoice error: {e}")
+    
     # Record status change history
     history_entry = {
         "order_id": order_id,
@@ -512,6 +521,216 @@ async def update_order_status(order_id: str, status_update: OrderStatusUpdate, r
 async def get_order_status_history(order_id: str, user: dict = Depends(require_role(["admin"]))):
     history = await db.order_status_history.find({"order_id": order_id}, {"_id": 0}).sort("changed_at", -1).to_list(50)
     return history
+
+# Auto-generate invoice from order
+async def _generate_invoice_from_order(order: dict, created_by: str = "Système"):
+    """Create a sales invoice from an order. Returns invoice id or None if already exists."""
+    # Check if invoice already exists for this order
+    existing = await db.invoices.find_one({"order_id": str(order.get("_id", order.get("id", "")))})
+    if existing:
+        return None
+    
+    now = datetime.now(timezone.utc)
+    number = await _get_next_invoice_number("FA", now.year)
+    
+    tva_rate = 20.0
+    items = []
+    total_ht = 0
+    for item in order.get("items", []):
+        qty = item.get("quantity", 1)
+        # unit_price from order is TTC, convert to HT
+        unit_ttc = item.get("unit_price", 0)
+        unit_ht = round(unit_ttc / (1 + tva_rate / 100), 2)
+        line_ht = qty * unit_ht
+        line_tva = round(line_ht * tva_rate / 100, 2)
+        items.append({
+            "description": item.get("product_name", "Produit"),
+            "quantity": qty,
+            "unit_price_ht": unit_ht,
+            "tva_rate": tva_rate,
+            "line_total_ht": round(line_ht, 2),
+            "line_tva": line_tva,
+            "line_total_ttc": round(line_ht + line_tva, 2)
+        })
+        total_ht += line_ht
+    
+    total_tva = round(total_ht * tva_rate / 100, 2)
+    total_ttc = round(total_ht + total_tva, 2)
+    
+    inv = {
+        "type": "sales",
+        "number": number,
+        "date": now.strftime("%Y-%m-%d"),
+        "customer_name": order.get("customer_name", ""),
+        "customer_email": order.get("customer_email", ""),
+        "customer_address": order.get("shipping_address", ""),
+        "items": items,
+        "total_ht": round(total_ht, 2),
+        "tva_rate": tva_rate,
+        "total_tva": total_tva,
+        "total_ttc": total_ttc,
+        "status": "sent",
+        "notes": f"Générée automatiquement depuis commande {order.get('order_number', '')}",
+        "order_id": str(order.get("_id", order.get("id", ""))),
+        "order_number": order.get("order_number", ""),
+        "created_at": now.isoformat(),
+        "created_by": created_by,
+        "updated_at": now.isoformat()
+    }
+    
+    result = await db.invoices.insert_one(inv)
+    inv.pop("_id", None)
+    return {"id": str(result.inserted_id), **inv}
+
+@api_router.post("/orders/{order_id}/generate-invoice")
+async def generate_invoice_from_order(order_id: str, user: dict = Depends(require_role(["admin"]))):
+    order = await db.orders.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        raise HTTPException(status_code=404, detail="Commande non trouvée")
+    
+    # Check existing
+    existing = await db.invoices.find_one({"order_id": order_id})
+    if existing:
+        return {"message": "Facture déjà existante", "invoice_number": existing.get("number"), "already_exists": True}
+    
+    inv = await _generate_invoice_from_order(order, created_by=user["name"])
+    if not inv:
+        raise HTTPException(status_code=400, detail="Impossible de générer la facture")
+    
+    return {"message": f"Facture {inv['number']} générée", "invoice": inv, "already_exists": False}
+
+# ========= Reminder System =========
+REMINDER_TEMPLATES = {
+    7: {"level": "rappel", "subject": "Rappel de paiement - Facture {number}",
+        "tone": "Poli et amical. Rappeler que la facture est en attente de paiement depuis 7 jours."},
+    14: {"level": "relance", "subject": "Relance - Facture {number} en attente",
+         "tone": "Plus ferme mais professionnel. Mentionner que c'est la deuxième relance, 14 jours sans paiement."},
+    30: {"level": "mise_en_demeure", "subject": "Mise en demeure - Facture {number}",
+         "tone": "Formel et sérieux. Dernière relance avant actions de recouvrement. 30 jours d'impayé."}
+}
+
+@api_router.get("/invoices/reminders")
+async def get_reminders(invoice_id: Optional[str] = None, user: dict = Depends(require_role(["admin"]))):
+    query = {"invoice_id": invoice_id} if invoice_id else {}
+    reminders = await db.reminders.find(query).sort("created_at", -1).to_list(500)
+    return [{"id": str(r["_id"]), **{k:v for k,v in r.items() if k != "_id"}} for r in reminders]
+
+@api_router.post("/invoices/{invoice_id}/remind")
+async def create_reminder(invoice_id: str, user: dict = Depends(require_role(["admin"]))):
+    inv = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Facture non trouvée")
+    
+    if inv.get("status") not in ["sent", "unpaid"]:
+        raise HTTPException(status_code=400, detail="Les relances ne s'appliquent qu'aux factures envoyées ou impayées")
+    
+    # Calculate days since invoice
+    inv_date = datetime.fromisoformat(inv["date"] + "T00:00:00+00:00") if "T" not in inv["date"] else datetime.fromisoformat(inv["date"])
+    days_since = (datetime.now(timezone.utc) - inv_date).days
+    
+    # Determine reminder level
+    if days_since >= 30:
+        template = REMINDER_TEMPLATES[30]
+    elif days_since >= 14:
+        template = REMINDER_TEMPLATES[14]
+    else:
+        template = REMINDER_TEMPLATES[7]
+    
+    # Generate AI content for the reminder
+    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    ai_content = ""
+    
+    if api_key:
+        try:
+            chat = LlmChat(
+                api_key=api_key,
+                session_id=f"reminder-{datetime.now().timestamp()}",
+                system_message=f"""Tu es le service comptabilité d'Assault58, marque de lampes torches tactiques.
+Tu rédiges des emails de relance de paiement pour des factures impayées.
+Ton: {template['tone']}
+La facture est la n°{inv['number']} d'un montant de {inv.get('total_ttc', 0):.2f}€ TTC datée du {inv['date']}.
+Le client est {inv.get('customer_name', 'Client')}.
+Rédige uniquement le corps de l'email (pas l'objet). Sois concis (max 150 mots). Termine par les coordonnées bancaires fictives."""
+            ).with_model("openai", "gpt-5.2")
+            
+            user_message = UserMessage(text=f"Rédige un email de {template['level']} pour la facture {inv['number']} impayée depuis {days_since} jours.")
+            ai_content = await chat.send_message(user_message)
+        except Exception as e:
+            logging.error(f"AI reminder error: {e}")
+            ai_content = f"[Erreur IA] Relance pour facture {inv['number']} - {inv.get('total_ttc', 0):.2f}€ TTC - {days_since} jours d'impayé."
+    else:
+        ai_content = f"Relance pour facture {inv['number']} - {inv.get('total_ttc', 0):.2f}€ TTC - {days_since} jours d'impayé."
+    
+    reminder = {
+        "invoice_id": invoice_id,
+        "invoice_number": inv.get("number", ""),
+        "customer_name": inv.get("customer_name", ""),
+        "customer_email": inv.get("customer_email", ""),
+        "level": template["level"],
+        "subject": template["subject"].format(number=inv.get("number", "")),
+        "content": ai_content,
+        "days_since_invoice": days_since,
+        "amount_ttc": inv.get("total_ttc", 0),
+        "status": "simulated",  # simulated = not sent, ready for n8n
+        "webhook_url": "",  # Ready for n8n integration
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": user["name"]
+    }
+    
+    result = await db.reminders.insert_one(reminder)
+    reminder.pop("_id", None)
+    
+    # Update invoice status to unpaid if it was just "sent"
+    if inv.get("status") == "sent":
+        await db.invoices.update_one({"_id": ObjectId(invoice_id)}, {"$set": {"status": "unpaid", "updated_at": datetime.now(timezone.utc).isoformat()}})
+    
+    return {"id": str(result.inserted_id), **reminder}
+
+@api_router.get("/invoices/reminders/pending")
+async def get_pending_reminders(user: dict = Depends(require_role(["admin"]))):
+    """Check which unpaid invoices need reminders"""
+    unpaid = await db.invoices.find({"type": "sales", "status": {"$in": ["sent", "unpaid"]}}).to_list(500)
+    
+    pending = []
+    now = datetime.now(timezone.utc)
+    
+    for inv in unpaid:
+        inv_date = datetime.fromisoformat(inv["date"] + "T00:00:00+00:00") if "T" not in inv["date"] else datetime.fromisoformat(inv["date"])
+        days = (now - inv_date).days
+        
+        # Get last reminder
+        last_reminder = await db.reminders.find({"invoice_id": str(inv["_id"])}).sort("created_at", -1).limit(1).to_list(1)
+        last_level = last_reminder[0]["level"] if last_reminder else None
+        reminders_count = await db.reminders.count_documents({"invoice_id": str(inv["_id"])})
+        
+        needs_reminder = False
+        next_level = "rappel"
+        
+        if days >= 30 and last_level != "mise_en_demeure":
+            needs_reminder = True
+            next_level = "mise_en_demeure"
+        elif days >= 14 and last_level not in ["relance", "mise_en_demeure"]:
+            needs_reminder = True
+            next_level = "relance"
+        elif days >= 7 and not last_reminder:
+            needs_reminder = True
+            next_level = "rappel"
+        
+        pending.append({
+            "invoice_id": str(inv["_id"]),
+            "invoice_number": inv.get("number", ""),
+            "customer_name": inv.get("customer_name", ""),
+            "customer_email": inv.get("customer_email", ""),
+            "amount_ttc": inv.get("total_ttc", 0),
+            "date": inv.get("date", ""),
+            "days_since": days,
+            "reminders_sent": reminders_count,
+            "last_level": last_level,
+            "needs_reminder": needs_reminder,
+            "next_level": next_level
+        })
+    
+    return sorted(pending, key=lambda x: x["days_since"], reverse=True)
 
 # Stockeur specific endpoint - only pending orders
 @api_router.get("/stockeur/orders")

@@ -16,7 +16,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from './ui/table';
-import { Plus, Download, Trash2, Upload, FileText, Receipt, Send, CheckCircle, AlertCircle, FileSpreadsheet } from 'lucide-react';
+import { Plus, Download, Trash2, Upload, FileText, Receipt, Send, CheckCircle, AlertCircle, FileSpreadsheet, Bell, Clock, Loader2 } from 'lucide-react';
 import { formatApiErrorDetail } from '../context/AuthContext';
 import { toast } from 'sonner';
 
@@ -30,7 +30,10 @@ export function InvoicesPage() {
   const [activeTab, setActiveTab] = useState('sales');
   const [salesInvoices, setSalesInvoices] = useState([]);
   const [purchaseInvoices, setPurchaseInvoices] = useState([]);
+  const [pendingReminders, setPendingReminders] = useState([]);
+  const [allReminders, setAllReminders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [sendingReminder, setSendingReminder] = useState({});
   const [showNewSale, setShowNewSale] = useState(false);
   const [showNewPurchase, setShowNewPurchase] = useState(false);
   const [filterMonth, setFilterMonth] = useState('');
@@ -43,13 +46,17 @@ export function InvoicesPage() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const params = filterMonth ? `?month=${filterMonth}` : '';
-      const [salesRes, purchRes] = await Promise.all([
+      const params = filterMonth && filterMonth !== 'all' ? `?month=${filterMonth}` : '';
+      const [salesRes, purchRes, pendingRes, remindersRes] = await Promise.all([
         axios.get(`${API_URL}/api/invoices/sales${params}`, { withCredentials: true }),
-        axios.get(`${API_URL}/api/invoices/purchases${params}`, { withCredentials: true })
+        axios.get(`${API_URL}/api/invoices/purchases${params}`, { withCredentials: true }),
+        axios.get(`${API_URL}/api/invoices/reminders/pending`, { withCredentials: true }),
+        axios.get(`${API_URL}/api/invoices/reminders`, { withCredentials: true })
       ]);
       setSalesInvoices(salesRes.data);
       setPurchaseInvoices(purchRes.data);
+      setPendingReminders(pendingRes.data);
+      setAllReminders(remindersRes.data);
     } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }
     finally { setLoading(false); }
   };
@@ -131,6 +138,16 @@ export function InvoicesPage() {
     e.target.value = '';
   };
 
+  const sendReminder = async (invoiceId) => {
+    setSendingReminder(prev => ({ ...prev, [invoiceId]: true }));
+    try {
+      const res = await axios.post(`${API_URL}/api/invoices/${invoiceId}/remind`, {}, { withCredentials: true });
+      toast.success(`Relance "${res.data.level}" créée pour ${res.data.customer_name}`);
+      fetchData();
+    } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }
+    finally { setSendingReminder(prev => ({ ...prev, [invoiceId]: false })); }
+  };
+
   const fmt = (n) => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(n || 0);
   const getMonths = () => { const o = []; const now = new Date(); for (let i = 0; i < 12; i++) { const d = new Date(now.getFullYear(), now.getMonth() - i, 1); o.push({ value: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`, label: d.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }) }); } return o; };
   const saleTotal = newSale.items.reduce((s, i) => s + (i.quantity * i.unit_price_ht), 0);
@@ -150,7 +167,16 @@ export function InvoicesPage() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="bg-secondary"><TabsTrigger value="sales">Factures ventes</TabsTrigger><TabsTrigger value="purchases">Factures achats</TabsTrigger></TabsList>
+        <TabsList className="bg-secondary">
+          <TabsTrigger value="sales">Factures ventes</TabsTrigger>
+          <TabsTrigger value="purchases">Factures achats</TabsTrigger>
+          <TabsTrigger value="reminders" className="relative">
+            Relances
+            {pendingReminders.filter(r => r.needs_reminder).length > 0 && (
+              <span className="ml-2 px-1.5 py-0.5 text-xs bg-red-500 text-white rounded-full">{pendingReminders.filter(r => r.needs_reminder).length}</span>
+            )}
+          </TabsTrigger>
+        </TabsList>
 
         {/* SALES TAB */}
         <TabsContent value="sales" className="space-y-4 mt-4">
@@ -278,6 +304,92 @@ export function InvoicesPage() {
               ))}</TableBody></Table></div>
             )}
           </CardContent></Card>
+        </TabsContent>
+
+        {/* REMINDERS TAB */}
+        <TabsContent value="reminders" className="space-y-6 mt-4">
+          {/* Pending reminders */}
+          <Card className="border-border">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Bell className="w-5 h-5 text-amber-500" />
+                Factures à relancer
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {pendingReminders.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">Aucune facture impayée</p>
+              ) : (
+                <div className="space-y-3">
+                  {pendingReminders.map(inv => (
+                    <div key={inv.invoice_id} className={`flex items-center justify-between p-4 rounded-xl border ${inv.needs_reminder ? 'border-amber-500/30 bg-amber-500/5' : 'border-border'}`}>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3">
+                          <span className="font-mono text-sm">{inv.invoice_number}</span>
+                          <span className="font-medium">{inv.customer_name}</span>
+                          <span className="font-bold text-primary">{fmt(inv.amount_ttc)}</span>
+                        </div>
+                        <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
+                          <span>{inv.days_since} jours d'impayé</span>
+                          <span>{inv.reminders_sent} relance(s) envoyée(s)</span>
+                          {inv.last_level && <span className={`px-2 py-0.5 rounded-full text-xs ${inv.last_level === 'mise_en_demeure' ? 'bg-red-500/10 text-red-500' : inv.last_level === 'relance' ? 'bg-amber-500/10 text-amber-500' : 'bg-blue-500/10 text-blue-500'}`}>{inv.last_level}</span>}
+                        </div>
+                      </div>
+                      <Button
+                        onClick={() => sendReminder(inv.invoice_id)}
+                        disabled={sendingReminder[inv.invoice_id]}
+                        className={inv.needs_reminder ? 'btn-primary' : 'rounded-full'}
+                        variant={inv.needs_reminder ? 'default' : 'secondary'}
+                        data-testid={`send-reminder-${inv.invoice_id}`}
+                      >
+                        {sendingReminder[inv.invoice_id] ? (
+                          <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Génération IA...</>
+                        ) : (
+                          <><Bell className="w-4 h-4 mr-2" />Relancer ({inv.next_level})</>
+                        )}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Reminder history */}
+          <Card className="border-border">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Clock className="w-5 h-5 text-primary" />
+                Historique des relances
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {allReminders.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">Aucune relance envoyée</p>
+              ) : (
+                <div className="space-y-3">
+                  {allReminders.map(rem => (
+                    <Card key={rem.id} className={`border-l-2 ${rem.level === 'mise_en_demeure' ? 'border-l-red-500' : rem.level === 'relance' ? 'border-l-amber-500' : 'border-l-blue-500'}`}>
+                      <CardContent className="pt-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm">{rem.invoice_number}</span>
+                            <span className="font-medium">{rem.customer_name}</span>
+                            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${rem.level === 'mise_en_demeure' ? 'bg-red-500/10 text-red-500' : rem.level === 'relance' ? 'bg-amber-500/10 text-amber-500' : 'bg-blue-500/10 text-blue-500'}`}>{rem.level}</span>
+                            <Badge variant="secondary" className="text-xs">{rem.status === 'simulated' ? 'Simulée' : rem.status}</Badge>
+                          </div>
+                          <span className="text-xs text-muted-foreground">{new Date(rem.created_at).toLocaleString('fr-FR')}</span>
+                        </div>
+                        <p className="text-sm font-medium mb-1">{rem.subject}</p>
+                        <div className="bg-secondary/50 rounded-lg p-3 text-sm whitespace-pre-wrap max-h-32 overflow-y-auto">{rem.content}</div>
+                        <p className="text-xs text-muted-foreground mt-2">Montant : {fmt(rem.amount_ttc)} | {rem.days_since_invoice}j d'impayé | Par {rem.created_by}</p>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>
