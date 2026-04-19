@@ -817,8 +817,8 @@ async def get_stockeur_orders(user: dict = Depends(require_role(["stockeur", "ad
 # Static routes MUST be before parameterized routes
 @api_router.get("/customers/map")
 async def get_customers_map(user: dict = Depends(require_role(["admin"]))):
-    customers = await db.customers.find({"latitude": {"$ne": None}}).to_list(1000)
-    return [{"id": str(c["_id"]), "name": c.get("name",""), "address": c.get("address",""), "status": c.get("status",""), "latitude": c.get("latitude"), "longitude": c.get("longitude"), "total_orders": c.get("total_orders",0)} for c in customers]
+    customers = await db.customers.find({}).to_list(1000)
+    return [{"id": str(c["_id"]), "name": c.get("name",""), "address": c.get("address",""), "status": c.get("status","particulier"), "latitude": c.get("latitude"), "longitude": c.get("longitude"), "total_orders": c.get("total_orders",0), "email": c.get("email",""), "phone": c.get("phone","")} for c in customers]
 
 @api_router.get("/customers")
 async def get_customers(user: dict = Depends(require_role(["admin"]))):
@@ -2069,7 +2069,10 @@ async def get_campaigns(user: dict = Depends(require_role(["marketing", "admin"]
 async def create_campaign(data: dict, user: dict = Depends(require_role(["marketing", "admin"]))):
     data["created_at"] = datetime.now(timezone.utc).isoformat()
     data["created_by"] = user["name"]
-    data.setdefault("results", {"reach": 0, "clicks": 0, "conversions": 0})
+    data.setdefault("networks", {})
+    data.setdefault("objective", "notoriete")
+    data.setdefault("notes", "")
+    data.setdefault("files", [])
     result = await db.campaigns.insert_one(data)
     data.pop("_id", None)
     return {"id": str(result.inserted_id), **data}
@@ -2350,9 +2353,21 @@ async def startup_event():
     existing_camp = await db.campaigns.count_documents({})
     if existing_camp == 0:
         campaigns = [
-            {"name": "Lancement Ultra X2000", "platform": "facebook", "start_date": "2026-03-01", "end_date": "2026-03-31", "budget_planned": 500, "budget_spent": 423.50, "status": "completed", "results": {"reach": 45200, "clicks": 1230, "conversions": 34}},
-            {"name": "Promo Printemps Instagram", "platform": "instagram", "start_date": "2026-04-01", "end_date": "2026-04-30", "budget_planned": 350, "budget_spent": 187.20, "status": "active", "results": {"reach": 22800, "clicks": 876, "conversions": 12}},
-            {"name": "Vidéo TikTok Tactical", "platform": "tiktok", "start_date": "2026-04-15", "end_date": "2026-05-15", "budget_planned": 200, "budget_spent": 0, "status": "planned", "results": {"reach": 0, "clicks": 0, "conversions": 0}},
+            {"name": "Lancement Ultra X2000", "status": "completed", "objective": "ventes", "start_date": "2026-03-01", "end_date": "2026-03-31", "notes": "Campagne de lancement multi-canal pour le nouveau X2000", "color": "#3B82F6", "files": [],
+             "networks": {
+                 "facebook": {"enabled": True, "budget_planned": 300, "budget_spent": 265, "content_type": "video", "results": {"reach": 32000, "clicks": 890, "impressions": 52000}},
+                 "instagram": {"enabled": True, "budget_planned": 200, "budget_spent": 158.50, "content_type": "carousel", "results": {"reach": 13200, "clicks": 340, "impressions": 21000}},
+             }},
+            {"name": "Promo Printemps", "status": "active", "objective": "trafic", "start_date": "2026-04-01", "end_date": "2026-04-30", "notes": "Offres de printemps sur toute la gamme", "color": "#F59E0B", "files": [],
+             "networks": {
+                 "instagram": {"enabled": True, "budget_planned": 200, "budget_spent": 112.20, "content_type": "reel", "results": {"reach": 15600, "clicks": 620, "impressions": 28000}},
+                 "tiktok": {"enabled": True, "budget_planned": 150, "budget_spent": 75, "content_type": "video", "results": {"reach": 7200, "clicks": 256, "impressions": 14500}},
+             }},
+            {"name": "Notoriété YouTube Q2", "status": "planned", "objective": "notoriete", "start_date": "2026-05-01", "end_date": "2026-06-30", "notes": "Série de vidéos tests avec influenceurs outdoor", "color": "#EF4444", "files": [],
+             "networks": {
+                 "youtube": {"enabled": True, "budget_planned": 500, "budget_spent": 0, "content_type": "video", "results": {"reach": 0, "clicks": 0, "impressions": 0}},
+                 "instagram": {"enabled": True, "budget_planned": 100, "budget_spent": 0, "content_type": "story", "results": {"reach": 0, "clicks": 0, "impressions": 0}},
+             }},
         ]
         for c in campaigns:
             c["created_at"] = datetime.now(timezone.utc).isoformat()
