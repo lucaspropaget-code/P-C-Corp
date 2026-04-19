@@ -20,9 +20,47 @@ import io
 import csv
 import json
 import httpx
+import requests as sync_requests
 
 # LLM Integration
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+# Object Storage
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+APP_NAME = "assault58"
+storage_key = None
+
+def init_storage():
+    global storage_key
+    if storage_key:
+        return storage_key
+    key = os.environ.get("EMERGENT_LLM_KEY")
+    if not key:
+        return None
+    try:
+        resp = sync_requests.post(f"{STORAGE_URL}/init", json={"emergent_key": key}, timeout=30)
+        resp.raise_for_status()
+        storage_key = resp.json()["storage_key"]
+        return storage_key
+    except Exception as e:
+        logging.error(f"Storage init failed: {e}")
+        return None
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    if not key:
+        raise Exception("Storage not initialized")
+    resp = sync_requests.put(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key, "Content-Type": content_type}, data=data, timeout=120)
+    resp.raise_for_status()
+    return resp.json()
+
+def get_object(path: str):
+    key = init_storage()
+    if not key:
+        raise Exception("Storage not initialized")
+    resp = sync_requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 ROOT_DIR = Path(__file__).parent
 
@@ -122,7 +160,13 @@ class ProductCreate(BaseModel):
     price: float
     quantity: int
     alert_threshold: int = 5
-    category: Optional[str] = ""
+    category: str = "lampe_torche"  # lampe_torche, accessoire, autre
+    photo_url: Optional[str] = ""
+    weight: Optional[float] = None  # kg
+    length: Optional[float] = None  # cm
+    width: Optional[float] = None   # cm
+    height: Optional[float] = None  # cm
+    stock_location: str = "leac"    # leac, andre
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -131,20 +175,28 @@ class ProductUpdate(BaseModel):
     quantity: Optional[int] = None
     alert_threshold: Optional[int] = None
     category: Optional[str] = None
+    photo_url: Optional[str] = None
+    weight: Optional[float] = None
+    length: Optional[float] = None
+    width: Optional[float] = None
+    height: Optional[float] = None
+    stock_location: Optional[str] = None
 
 class StockMovement(BaseModel):
     product_id: str
     quantity_change: int
     reason: str
+    movement_type: str = "normal"  # normal, gift_prospection
 
 class OrderCreate(BaseModel):
     customer_name: str
-    customer_email: Optional[str] = ""
-    customer_phone: Optional[str] = ""
+    customer_email: str
+    customer_phone: str
     shipping_address: str
-    items: List[dict]  # [{product_id, quantity, unit_price}]
+    billing_address: Optional[str] = ""
+    items: List[dict]
     notes: Optional[str] = ""
-    source: str = "manual"
+    source: str = "site"  # site, salon, autre
 
 class OrderStatusUpdate(BaseModel):
     status: str  # pending, shipped, delivered, cancelled
@@ -155,6 +207,9 @@ class CustomerCreate(BaseModel):
     phone: Optional[str] = ""
     address: Optional[str] = ""
     notes: Optional[str] = ""
+    status: str = "particulier"  # particulier, professionnel, gendarmerie, police, ecole_police, federation_chasse, autre
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 class CustomerUpdate(BaseModel):
     name: Optional[str] = None
@@ -162,6 +217,9 @@ class CustomerUpdate(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
     notes: Optional[str] = None
+    status: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 class ExpenseCreate(BaseModel):
     description: str
@@ -233,10 +291,16 @@ class SalesInvoiceCreate(BaseModel):
     customer_name: str
     customer_email: Optional[str] = ""
     customer_address: Optional[str] = ""
+    billing_address: Optional[str] = ""
+    shipping_address: Optional[str] = ""
+    customer_id: Optional[str] = None
     items: List[dict]
     tva_rate: float = 20.0
+    shipping_cost_ht: Optional[float] = 0
     notes: Optional[str] = ""
-    status: str = "draft"  # draft, sent, paid, unpaid
+    status: str = "draft"
+    payment_method: str = ""  # cb, paypal, virement, cheque, mollie, especes
+    sale_source: str = "site"  # site, salon, autre
 
 class SalesInvoiceUpdate(BaseModel):
     status: Optional[str] = None
@@ -412,6 +476,7 @@ async def record_stock_movement(movement: StockMovement, user: dict = Depends(re
         "previous_quantity": product["quantity"],
         "new_quantity": new_quantity,
         "reason": movement.reason,
+        "movement_type": movement.movement_type,
         "user_id": user["_id"],
         "user_name": user["name"],
         "created_at": datetime.now(timezone.utc).isoformat()
@@ -451,6 +516,8 @@ async def create_order(order: OrderCreate, user: dict = Depends(require_role(["a
     order_dict["created_at"] = datetime.now(timezone.utc).isoformat()
     order_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
     order_dict["order_number"] = f"ORD-{datetime.now().strftime('%Y%m%d')}-{secrets.token_hex(3).upper()}"
+    if not order_dict.get("billing_address"):
+        order_dict["billing_address"] = order_dict["shipping_address"]
     
     # Update stock for each item
     for item in order.items:
@@ -747,6 +814,12 @@ async def get_stockeur_orders(user: dict = Depends(require_role(["stockeur", "ad
     } for o in orders]
 
 # Customers Management
+# Static routes MUST be before parameterized routes
+@api_router.get("/customers/map")
+async def get_customers_map(user: dict = Depends(require_role(["admin"]))):
+    customers = await db.customers.find({"latitude": {"$ne": None}}).to_list(1000)
+    return [{"id": str(c["_id"]), "name": c.get("name",""), "address": c.get("address",""), "status": c.get("status",""), "latitude": c.get("latitude"), "longitude": c.get("longitude"), "total_orders": c.get("total_orders",0)} for c in customers]
+
 @api_router.get("/customers")
 async def get_customers(user: dict = Depends(require_role(["admin"]))):
     customers = await db.customers.find({}).sort("name", 1).to_list(1000)
@@ -790,6 +863,106 @@ async def update_customer(customer_id: str, customer: CustomerUpdate, user: dict
 async def delete_customer(customer_id: str, user: dict = Depends(require_role(["admin"]))):
     await db.customers.delete_one({"_id": ObjectId(customer_id)})
     return {"message": "Client supprimé"}
+
+# Customer notes/issues
+@api_router.get("/customers/{customer_id}/notes")
+async def get_customer_notes(customer_id: str, user: dict = Depends(require_role(["admin"]))):
+    notes = await db.customer_notes.find({"customer_id": customer_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return notes
+
+@api_router.post("/customers/{customer_id}/notes")
+async def add_customer_note(customer_id: str, data: dict, user: dict = Depends(require_role(["admin"]))):
+    note = {
+        "customer_id": customer_id,
+        "type": data.get("type", "note"),  # note, issue, resolution
+        "content": data.get("content", ""),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": user["name"]
+    }
+    await db.customer_notes.insert_one(note)
+    return {"message": "Note ajoutée"}
+
+# Photo upload
+@api_router.post("/upload/photo")
+async def upload_photo(file: UploadFile = File(...), user: dict = Depends(require_role(["admin"]))):
+    content = await file.read()
+    ext = file.filename.split(".")[-1].lower() if "." in file.filename else "jpg"
+    content_type = file.content_type or f"image/{ext}"
+    path = f"{APP_NAME}/products/{uuid.uuid4().hex}.{ext}"
+    
+    try:
+        result = put_object(path, content, content_type)
+        return {"url": result.get("url", result.get("public_url", "")), "path": path}
+    except Exception as e:
+        logging.error(f"Upload error: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur upload: {str(e)}")
+
+# Boxtal config
+@api_router.get("/settings/boxtal")
+async def get_boxtal_config(user: dict = Depends(require_role(["admin"]))):
+    config = await db.settings.find_one({"type": "boxtal"}, {"_id": 0})
+    if config and config.get("api_secret"):
+        config["api_secret"] = "***" + config["api_secret"][-4:]
+    return config or {"api_key": "", "api_secret": "", "mode": "test"}
+
+@api_router.post("/settings/boxtal")
+async def save_boxtal_config(data: dict, user: dict = Depends(require_role(["admin"]))):
+    data["type"] = "boxtal"
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.settings.update_one({"type": "boxtal"}, {"$set": data}, upsert=True)
+    return {"message": "Configuration Boxtal sauvegardée"}
+
+# Simulated Boxtal shipping
+@api_router.post("/shipping/create-label")
+async def create_shipping_label(data: dict, request: Request):
+    user = await get_current_user(request)
+    if user["role"] not in ["admin", "stockeur"]:
+        raise HTTPException(status_code=403, detail="Accès non autorisé")
+    
+    order_id = data.get("order_id")
+    shipping_method = data.get("method", "colissimo_domicile")  # colissimo_domicile, colissimo_relais
+    
+    order = await db.orders.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        raise HTTPException(status_code=404, detail="Commande non trouvée")
+    
+    # Simulated label generation
+    label = {
+        "order_id": order_id,
+        "order_number": order.get("order_number", ""),
+        "tracking_number": f"{'6C' if shipping_method == 'colissimo_domicile' else '6R'}{secrets.token_hex(6).upper()}",
+        "carrier": "Colissimo",
+        "method": shipping_method,
+        "method_label": "Colissimo Domicile" if shipping_method == "colissimo_domicile" else "Colissimo Point Relais",
+        "status": "created",
+        "customer_name": order.get("customer_name", ""),
+        "shipping_address": order.get("shipping_address", ""),
+        "weight": data.get("weight", 0.5),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": user["name"],
+        "label_url": f"#simulated-label-{secrets.token_hex(4)}"
+    }
+    
+    result = await db.shipping_labels.insert_one(label)
+    label.pop("_id", None)
+    
+    # Update order with tracking
+    await db.orders.update_one({"_id": ObjectId(order_id)}, {"$set": {
+        "tracking_number": label["tracking_number"],
+        "shipping_method": label["method_label"],
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }})
+    
+    return {"id": str(result.inserted_id), **label}
+
+@api_router.get("/shipping/labels")
+async def get_shipping_labels(order_id: Optional[str] = None, request: Request = None):
+    user = await get_current_user(request)
+    if user["role"] not in ["admin", "stockeur"]:
+        raise HTTPException(status_code=403, detail="Accès non autorisé")
+    query = {"order_id": order_id} if order_id else {}
+    labels = await db.shipping_labels.find(query).sort("created_at", -1).to_list(500)
+    return [{"id": str(l["_id"]), **{k:v for k,v in l.items() if k != "_id"}} for l in labels]
 
 # Expenses / Accounting
 @api_router.get("/expenses")
@@ -1015,8 +1188,12 @@ async def create_sales_invoice(invoice: SalesInvoiceCreate, user: dict = Depends
         items_with_totals.append({**item, "line_total_ht": line_ht, "line_tva": line_tva, "line_total_ttc": line_ht + line_tva})
         total_ht += line_ht
     
-    total_tva = total_ht * invoice.tva_rate / 100
-    total_ttc = total_ht + total_tva
+    # Add shipping cost with TVA
+    shipping_ht = invoice.shipping_cost_ht or 0
+    shipping_tva = round(shipping_ht * invoice.tva_rate / 100, 2)
+    
+    total_tva = total_ht * invoice.tva_rate / 100 + shipping_tva
+    total_ttc = total_ht + total_tva + shipping_ht + shipping_tva
     
     inv_dict = {
         "type": "sales",
@@ -1025,13 +1202,20 @@ async def create_sales_invoice(invoice: SalesInvoiceCreate, user: dict = Depends
         "customer_name": invoice.customer_name,
         "customer_email": invoice.customer_email,
         "customer_address": invoice.customer_address,
+        "billing_address": invoice.billing_address or invoice.customer_address,
+        "shipping_address": invoice.shipping_address or invoice.customer_address,
+        "customer_id": invoice.customer_id,
         "items": items_with_totals,
-        "total_ht": round(total_ht, 2),
+        "total_ht": round(total_ht + shipping_ht, 2),
+        "shipping_cost_ht": shipping_ht,
+        "shipping_tva": shipping_tva,
         "tva_rate": invoice.tva_rate,
         "total_tva": round(total_tva, 2),
         "total_ttc": round(total_ttc, 2),
         "status": invoice.status,
         "notes": invoice.notes,
+        "payment_method": invoice.payment_method,
+        "sale_source": invoice.sale_source,
         "created_at": now.isoformat(),
         "created_by": user["name"],
         "updated_at": now.isoformat()
@@ -1906,11 +2090,13 @@ async def startup_event():
     
     # Seed demo products
     demo_products = [
-        {"name": "Assault58 Pro X1000", "sku": "A58-PX1000", "description": "Lampe torche tactique 1000 lumens, étanche IP68", "price": 89.90, "quantity": 45, "alert_threshold": 10, "category": "Pro"},
-        {"name": "Assault58 Ultra X2000", "sku": "A58-UX2000", "description": "Lampe torche tactique 2000 lumens, rechargeable USB-C", "price": 129.90, "quantity": 28, "alert_threshold": 8, "category": "Ultra"},
-        {"name": "Assault58 Compact C500", "sku": "A58-CC500", "description": "Lampe de poche compacte 500 lumens, EDC", "price": 49.90, "quantity": 67, "alert_threshold": 15, "category": "Compact"},
-        {"name": "Assault58 Tactical T1500", "sku": "A58-TT1500", "description": "Lampe tactique professionnelle 1500 lumens, strobe", "price": 159.90, "quantity": 5, "alert_threshold": 10, "category": "Tactical"},
-        {"name": "Assault58 Mini M300", "sku": "A58-MM300", "description": "Mini lampe porte-clés 300 lumens", "price": 29.90, "quantity": 120, "alert_threshold": 20, "category": "Mini"},
+        {"name": "Assault58 Pro X1000", "sku": "A58-PX1000", "description": "Lampe torche tactique 1000 lumens, étanche IP68", "price": 89.90, "quantity": 45, "alert_threshold": 10, "category": "lampe_torche", "weight": 0.35, "length": 18, "width": 4, "height": 4, "stock_location": "leac"},
+        {"name": "Assault58 Ultra X2000", "sku": "A58-UX2000", "description": "Lampe torche tactique 2000 lumens, rechargeable USB-C", "price": 129.90, "quantity": 28, "alert_threshold": 8, "category": "lampe_torche", "weight": 0.42, "length": 21, "width": 4.5, "height": 4.5, "stock_location": "leac"},
+        {"name": "Assault58 Compact C500", "sku": "A58-CC500", "description": "Lampe de poche compacte 500 lumens, EDC", "price": 49.90, "quantity": 67, "alert_threshold": 15, "category": "lampe_torche", "weight": 0.12, "length": 10, "width": 2.5, "height": 2.5, "stock_location": "andre"},
+        {"name": "Assault58 Tactical T1500", "sku": "A58-TT1500", "description": "Lampe tactique professionnelle 1500 lumens, strobe", "price": 159.90, "quantity": 5, "alert_threshold": 10, "category": "lampe_torche", "weight": 0.55, "length": 22, "width": 5, "height": 5, "stock_location": "leac"},
+        {"name": "Assault58 Mini M300", "sku": "A58-MM300", "description": "Mini lampe porte-clés 300 lumens", "price": 29.90, "quantity": 120, "alert_threshold": 20, "category": "lampe_torche", "weight": 0.05, "length": 6, "width": 2, "height": 2, "stock_location": "andre"},
+        {"name": "Holster tactique universel", "sku": "A58-HT01", "description": "Holster ceinture compatible toutes lampes Assault58", "price": 19.90, "quantity": 80, "alert_threshold": 15, "category": "accessoire", "weight": 0.08, "length": 15, "width": 5, "height": 3, "stock_location": "leac"},
+        {"name": "Kit filtres couleur", "sku": "A58-KF01", "description": "Jeu de 4 filtres (rouge, vert, bleu, diffuseur)", "price": 14.90, "quantity": 45, "alert_threshold": 10, "category": "accessoire", "weight": 0.03, "length": 5, "width": 5, "height": 2, "stock_location": "andre"},
     ]
     
     for product in demo_products:
@@ -1918,14 +2104,20 @@ async def startup_event():
         if not existing:
             product["created_at"] = datetime.now(timezone.utc).isoformat()
             product["updated_at"] = datetime.now(timezone.utc).isoformat()
+            product["photo_url"] = ""
             await db.products.insert_one(product)
             logger.info(f"Product created: {product['name']}")
     
-    # Seed demo customers
+    # Seed demo customers (with coordinates for map)
     demo_customers = [
-        {"name": "Jean Dupont", "email": "jean.dupont@email.com", "phone": "06 12 34 56 78", "address": "15 Rue de la Paix, 75001 Paris"},
-        {"name": "Marie Martin", "email": "marie.martin@email.com", "phone": "06 98 76 54 32", "address": "8 Avenue des Champs-Élysées, 75008 Paris"},
-        {"name": "Pierre Bernard", "email": "p.bernard@email.com", "phone": "07 11 22 33 44", "address": "23 Rue du Commerce, 69001 Lyon"},
+        {"name": "Jean Dupont", "email": "jean.dupont@email.com", "phone": "06 12 34 56 78", "address": "15 Rue de la Paix, 75001 Paris", "status": "particulier", "latitude": 48.8698, "longitude": 2.3311},
+        {"name": "Marie Martin", "email": "marie.martin@email.com", "phone": "06 98 76 54 32", "address": "8 Avenue des Champs-Élysées, 75008 Paris", "status": "particulier", "latitude": 48.8698, "longitude": 2.3077},
+        {"name": "Pierre Bernard", "email": "p.bernard@email.com", "phone": "07 11 22 33 44", "address": "23 Rue du Commerce, 69001 Lyon", "status": "professionnel", "latitude": 45.7640, "longitude": 4.8357},
+        {"name": "Groupement Gendarmerie Nationale", "email": "contact@gendarmerie-achat.fr", "phone": "01 56 28 40 00", "address": "4 Rue Claude Bernard, 92130 Issy-les-Moulineaux", "status": "gendarmerie", "latitude": 48.8244, "longitude": 2.2697},
+        {"name": "Commissariat Central Marseille", "email": "achat@police-marseille.fr", "phone": "04 91 39 80 00", "address": "2 Rue Antoine Becker, 13002 Marseille", "status": "police", "latitude": 43.3004, "longitude": 5.3698},
+        {"name": "ENSP Saint-Cyr-au-Mont-d'Or", "email": "logistique@ensp.interieur.gouv.fr", "phone": "04 72 53 18 00", "address": "9 Rue Carnot, 69450 Saint-Cyr-au-Mont-d'Or", "status": "ecole_police", "latitude": 45.8131, "longitude": 4.8283},
+        {"name": "Fédération de Chasse du Lot", "email": "fed.chasse46@chasseurdefrance.com", "phone": "05 65 35 09 50", "address": "96 Rue du Docteur Bergougnoux, 46000 Cahors", "status": "federation_chasse", "latitude": 44.4475, "longitude": 1.4369},
+        {"name": "Outdoor Pro Toulouse", "email": "pro@outdoor-toulouse.com", "phone": "05 61 22 33 44", "address": "12 Allées Jean Jaurès, 31000 Toulouse", "status": "professionnel", "latitude": 43.6047, "longitude": 1.4442},
     ]
     
     for customer in demo_customers:
@@ -2004,6 +2196,28 @@ async def startup_event():
                 order["status_history"] = [{"old_status": "new", "new_status": order["status"], "changed_by": "Système", "changed_at": order_date.isoformat()}]
                 await db.orders.insert_one(order)
                 logger.info(f"Order created: {order['order_number']}")
+    
+    # Seed stock movements (10 movements, 3 gift/prospection)
+    existing_movements = await db.stock_movements.count_documents({})
+    if existing_movements < 3 and products:
+        movements = [
+            {"product_id": str(products[0]["_id"]), "product_name": products[0]["name"], "quantity_change": 50, "previous_quantity": 45, "new_quantity": 95, "reason": "Réception fournisseur", "movement_type": "normal"},
+            {"product_id": str(products[1]["_id"]), "product_name": products[1]["name"], "quantity_change": -2, "previous_quantity": 28, "new_quantity": 26, "reason": "Commande WOO-1234", "movement_type": "normal"},
+            {"product_id": str(products[2]["_id"]), "product_name": products[2]["name"], "quantity_change": 30, "previous_quantity": 67, "new_quantity": 97, "reason": "Réassort trimestriel", "movement_type": "normal"},
+            {"product_id": str(products[3]["_id"]), "product_name": products[3]["name"], "quantity_change": -1, "previous_quantity": 5, "new_quantity": 4, "reason": "Vente salon Milipol", "movement_type": "normal"},
+            {"product_id": str(products[0]["_id"]), "product_name": products[0]["name"], "quantity_change": -3, "previous_quantity": 95, "new_quantity": 92, "reason": "Commande groupée gendarmerie", "movement_type": "normal"},
+            {"product_id": str(products[4]["_id"]), "product_name": products[4]["name"], "quantity_change": -5, "previous_quantity": 120, "new_quantity": 115, "reason": "Inventaire correction", "movement_type": "normal"},
+            {"product_id": str(products[1]["_id"]), "product_name": products[1]["name"], "quantity_change": 20, "previous_quantity": 26, "new_quantity": 46, "reason": "Livraison usine", "movement_type": "normal"},
+            {"product_id": str(products[0]["_id"]), "product_name": products[0]["name"], "quantity_change": -2, "previous_quantity": 92, "new_quantity": 90, "reason": "Cadeau salon Milipol - prospect Gendarmerie", "movement_type": "gift_prospection"},
+            {"product_id": str(products[2]["_id"]), "product_name": products[2]["name"], "quantity_change": -1, "previous_quantity": 97, "new_quantity": 96, "reason": "Échantillon YouTubeur Survival Gear France", "movement_type": "gift_prospection"},
+            {"product_id": str(products[4]["_id"]), "product_name": products[4]["name"], "quantity_change": -3, "previous_quantity": 115, "new_quantity": 112, "reason": "Lots cadeaux clients fidèles Noël", "movement_type": "gift_prospection"},
+        ]
+        for i, m in enumerate(movements):
+            m["user_id"] = "system"
+            m["user_name"] = "Système"
+            m["created_at"] = (datetime.now(timezone.utc) - timedelta(days=10-i)).isoformat()
+            await db.stock_movements.insert_one(m)
+        logger.info("Stock movements seeded")
     
     # Write test credentials
     Path("/app/memory").mkdir(exist_ok=True)

@@ -47,18 +47,10 @@ export function StockPage() {
   const [editingProduct, setEditingProduct] = useState(null);
   const [selectedProductId, setSelectedProductId] = useState('');
   const [newProduct, setNewProduct] = useState({
-    name: '',
-    sku: '',
-    description: '',
-    price: '',
-    quantity: '',
-    alert_threshold: '5',
-    category: ''
+    name: '', sku: '', description: '', price: '', quantity: '', alert_threshold: '5', category: 'lampe_torche', photo_url: '', weight: '', length: '', width: '', height: '', stock_location: 'leac'
   });
   const [movement, setMovement] = useState({
-    product_id: '',
-    quantity_change: '',
-    reason: ''
+    product_id: '', quantity_change: '', reason: '', movement_type: 'normal'
   });
 
   useEffect(() => {
@@ -99,7 +91,11 @@ export function StockPage() {
         ...newProduct,
         price: parseFloat(newProduct.price),
         quantity: parseInt(newProduct.quantity),
-        alert_threshold: parseInt(newProduct.alert_threshold) || 5
+        alert_threshold: parseInt(newProduct.alert_threshold) || 5,
+        weight: newProduct.weight ? parseFloat(newProduct.weight) : null,
+        length: newProduct.length ? parseFloat(newProduct.length) : null,
+        width: newProduct.width ? parseFloat(newProduct.width) : null,
+        height: newProduct.height ? parseFloat(newProduct.height) : null,
       };
       
       if (editingProduct) {
@@ -113,13 +109,7 @@ export function StockPage() {
       setShowNewProduct(false);
       setEditingProduct(null);
       setNewProduct({
-        name: '',
-        sku: '',
-        description: '',
-        price: '',
-        quantity: '',
-        alert_threshold: '5',
-        category: ''
+        name: '', sku: '', description: '', price: '', quantity: '', alert_threshold: '5', category: 'lampe_torche', photo_url: '', weight: '', length: '', width: '', height: '', stock_location: 'leac'
       });
       fetchProducts();
     } catch (err) {
@@ -153,7 +143,7 @@ export function StockPage() {
       
       toast.success('Mouvement enregistré');
       setShowMovement(false);
-      setMovement({ product_id: '', quantity_change: '', reason: '' });
+      setMovement({ product_id: '', quantity_change: '', reason: '', movement_type: 'normal' });
       fetchProducts();
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
@@ -163,13 +153,7 @@ export function StockPage() {
   const openEdit = (product) => {
     setEditingProduct(product);
     setNewProduct({
-      name: product.name,
-      sku: product.sku,
-      description: product.description || '',
-      price: product.price.toString(),
-      quantity: product.quantity.toString(),
-      alert_threshold: product.alert_threshold.toString(),
-      category: product.category || ''
+      name: product.name, sku: product.sku, description: product.description || '', price: product.price.toString(), quantity: product.quantity.toString(), alert_threshold: product.alert_threshold.toString(), category: product.category || 'lampe_torche', photo_url: product.photo_url || '', weight: product.weight?.toString() || '', length: product.length?.toString() || '', width: product.width?.toString() || '', height: product.height?.toString() || '', stock_location: product.stock_location || 'leac'
     });
     setShowNewProduct(true);
   };
@@ -237,6 +221,14 @@ export function StockPage() {
                     className="bg-secondary"
                   />
                   <p className="text-xs text-muted-foreground">Positif = entrée, Négatif = sortie</p>
+                </div>
+                <div className="space-y-2">
+                  <Label>Type de mouvement</Label>
+                  <select className="w-full p-3 rounded-xl bg-secondary border border-border" value={movement.movement_type} onChange={(e) => setMovement({...movement, movement_type: e.target.value})}>
+                    <option value="normal">Normal (vente/achat/inventaire)</option>
+                    <option value="gift_prospection">Cadeau / Prospection</option>
+                  </select>
+                  {movement.movement_type === 'gift_prospection' && <p className="text-xs text-amber-500">Les cadeaux/prospection sortent du stock sans impact financier</p>}
                 </div>
                 <div className="space-y-2">
                   <Label>Raison</Label>
@@ -348,12 +340,24 @@ export function StockPage() {
                 </div>
                 <div className="space-y-2">
                   <Label>Catégorie</Label>
-                  <Input
-                    value={newProduct.category}
-                    onChange={(e) => setNewProduct({...newProduct, category: e.target.value})}
-                    placeholder="Pro, Ultra, Compact..."
-                    className="bg-secondary"
-                  />
+                  <select className="w-full p-3 rounded-xl bg-secondary border border-border" value={newProduct.category} onChange={(e) => setNewProduct({...newProduct, category: e.target.value})}>
+                    <option value="lampe_torche">Lampe torche</option>
+                    <option value="accessoire">Accessoire</option>
+                    <option value="autre">Autre</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Localisation stock</Label>
+                  <select className="w-full p-3 rounded-xl bg-secondary border border-border" value={newProduct.stock_location} onChange={(e) => setNewProduct({...newProduct, stock_location: e.target.value})}>
+                    <option value="leac">LÉAC</option>
+                    <option value="andre">André</option>
+                  </select>
+                </div>
+                <div className="grid grid-cols-4 gap-3">
+                  <div className="space-y-2"><Label>Poids (kg)</Label><Input type="number" step="0.01" value={newProduct.weight} onChange={e => setNewProduct({...newProduct, weight: e.target.value})} className="bg-secondary" placeholder="0.35" /></div>
+                  <div className="space-y-2"><Label>L (cm)</Label><Input type="number" step="0.1" value={newProduct.length} onChange={e => setNewProduct({...newProduct, length: e.target.value})} className="bg-secondary" /></div>
+                  <div className="space-y-2"><Label>l (cm)</Label><Input type="number" step="0.1" value={newProduct.width} onChange={e => setNewProduct({...newProduct, width: e.target.value})} className="bg-secondary" /></div>
+                  <div className="space-y-2"><Label>H (cm)</Label><Input type="number" step="0.1" value={newProduct.height} onChange={e => setNewProduct({...newProduct, height: e.target.value})} className="bg-secondary" /></div>
                 </div>
                 <Button onClick={createProduct} className="w-full btn-primary" data-testid="save-product-button">
                   {editingProduct ? 'Mettre à jour' : 'Créer le produit'}
@@ -420,6 +424,7 @@ export function StockPage() {
                     <TableHead>Produit</TableHead>
                     <TableHead>SKU</TableHead>
                     <TableHead>Catégorie</TableHead>
+                    <TableHead>Stock</TableHead>
                     <TableHead className="text-right">Prix</TableHead>
                     <TableHead className="text-right">Stock</TableHead>
                     <TableHead className="text-right">Seuil</TableHead>
@@ -443,8 +448,11 @@ export function StockPage() {
                       <TableCell className="font-mono text-sm">{product.sku}</TableCell>
                       <TableCell>
                         {product.category && (
-                          <Badge variant="secondary">{product.category}</Badge>
+                          <Badge variant="secondary">{product.category === 'lampe_torche' ? 'Lampe torche' : product.category === 'accessoire' ? 'Accessoire' : product.category}</Badge>
                         )}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs">{product.stock_location === 'leac' ? 'LÉAC' : product.stock_location === 'andre' ? 'André' : product.stock_location || '-'}</Badge>
                       </TableCell>
                       <TableCell className="text-right font-medium">{formatCurrency(product.price)}</TableCell>
                       <TableCell className="text-right">

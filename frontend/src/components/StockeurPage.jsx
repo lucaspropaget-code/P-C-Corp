@@ -9,7 +9,8 @@ import {
   CheckCircle,
   Loader2,
   RefreshCw,
-  User
+  User,
+  Printer
 } from 'lucide-react';
 import { formatApiErrorDetail } from '../context/AuthContext';
 import { toast } from 'sonner';
@@ -20,6 +21,7 @@ export function StockeurPage() {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState({});
+  const [shippingMethod, setShippingMethod] = useState({});
 
   useEffect(() => {
     fetchOrders();
@@ -40,12 +42,20 @@ export function StockeurPage() {
   const markAsShipped = async (orderId) => {
     setProcessing(prev => ({ ...prev, [orderId]: true }));
     try {
+      // Generate shipping label first
+      const method = shippingMethod[orderId] || 'colissimo_domicile';
+      await axios.post(`${API_URL}/api/shipping/create-label`, {
+        order_id: orderId,
+        method: method
+      }, { withCredentials: true });
+      
+      // Then mark as shipped
       await axios.put(
         `${API_URL}/api/orders/${orderId}/status`,
         { status: 'shipped' },
         { withCredentials: true }
       );
-      toast.success('Commande marquée comme expédiée');
+      toast.success('Bordereau généré et commande marquée comme expédiée');
       fetchOrders();
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
@@ -156,23 +166,34 @@ export function StockeurPage() {
                     </div>
                   </div>
 
-                  {/* Action Button */}
-                  <div className="lg:ml-6">
+                  {/* Shipping Method + Action */}
+                  <div className="lg:ml-6 space-y-3">
+                    <div>
+                      <p className="text-sm text-muted-foreground mb-2">Mode d'expédition</p>
+                      <select
+                        className="w-full p-3 rounded-xl bg-secondary border border-border text-base"
+                        value={shippingMethod[order.id] || 'colissimo_domicile'}
+                        onChange={(e) => setShippingMethod(prev => ({...prev, [order.id]: e.target.value}))}
+                      >
+                        <option value="colissimo_domicile">Colissimo Domicile</option>
+                        <option value="colissimo_relais">Colissimo Point Relais</option>
+                      </select>
+                    </div>
                     <Button
                       onClick={() => markAsShipped(order.id)}
                       disabled={processing[order.id]}
-                      className="w-full lg:w-auto btn-primary text-lg py-8 px-10"
+                      className="w-full btn-primary text-lg py-8 px-10"
                       data-testid={`ship-order-${order.id}`}
                     >
                       {processing[order.id] ? (
                         <>
                           <Loader2 className="w-6 h-6 mr-2 animate-spin" />
-                          Traitement...
+                          Génération bordereau...
                         </>
                       ) : (
                         <>
-                          <CheckCircle className="w-6 h-6 mr-2" />
-                          Marquer comme expédié
+                          <Printer className="w-6 h-6 mr-2" />
+                          Expédier + Bordereau
                         </>
                       )}
                     </Button>

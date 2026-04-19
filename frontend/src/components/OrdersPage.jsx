@@ -68,9 +68,10 @@ export function OrdersPage() {
     customer_email: '',
     customer_phone: '',
     shipping_address: '',
+    billing_address: '',
     items: [],
     notes: '',
-    source: 'manual'
+    source: 'site'
   });
   const [newItem, setNewItem] = useState({ product_id: '', quantity: 1 });
 
@@ -167,8 +168,8 @@ export function OrdersPage() {
   };
 
   const createOrder = async () => {
-    if (!newOrder.customer_name || !newOrder.shipping_address || newOrder.items.length === 0) {
-      toast.error('Veuillez remplir tous les champs obligatoires');
+    if (!newOrder.customer_name || !newOrder.shipping_address || !newOrder.customer_email || !newOrder.customer_phone || newOrder.items.length === 0) {
+      toast.error('Veuillez remplir : nom, email, téléphone, adresse et articles');
       return;
     }
 
@@ -181,9 +182,10 @@ export function OrdersPage() {
         customer_email: '',
         customer_phone: '',
         shipping_address: '',
+        billing_address: '',
         items: [],
         notes: '',
-        source: 'manual'
+        source: 'site'
       });
       fetchOrders();
     } catch (err) {
@@ -243,45 +245,35 @@ export function OrdersPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Nom du client *</Label>
-                  <Input
-                    value={newOrder.customer_name}
-                    onChange={(e) => setNewOrder({...newOrder, customer_name: e.target.value})}
-                    placeholder="Nom complet"
-                    className="bg-secondary"
-                    data-testid="order-customer-name"
-                  />
+                  <Input value={newOrder.customer_name} onChange={(e) => setNewOrder({...newOrder, customer_name: e.target.value})} placeholder="Nom complet" className="bg-secondary" data-testid="order-customer-name" />
                 </div>
                 <div className="space-y-2">
-                  <Label>Email</Label>
-                  <Input
-                    type="email"
-                    value={newOrder.customer_email}
-                    onChange={(e) => setNewOrder({...newOrder, customer_email: e.target.value})}
-                    placeholder="email@exemple.com"
-                    className="bg-secondary"
-                  />
+                  <Label>Source *</Label>
+                  <select className="w-full p-3 rounded-xl bg-secondary border border-border" value={newOrder.source} onChange={(e) => setNewOrder({...newOrder, source: e.target.value})}>
+                    <option value="site">Site</option>
+                    <option value="salon">Salon</option>
+                    <option value="autre">Autre</option>
+                  </select>
                 </div>
               </div>
-              
-              <div className="space-y-2">
-                <Label>Téléphone</Label>
-                <Input
-                  value={newOrder.customer_phone}
-                  onChange={(e) => setNewOrder({...newOrder, customer_phone: e.target.value})}
-                  placeholder="06 12 34 56 78"
-                  className="bg-secondary"
-                />
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Email *</Label>
+                  <Input type="email" value={newOrder.customer_email} onChange={(e) => setNewOrder({...newOrder, customer_email: e.target.value})} placeholder="email@exemple.com" className="bg-secondary" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Téléphone *</Label>
+                  <Input value={newOrder.customer_phone} onChange={(e) => setNewOrder({...newOrder, customer_phone: e.target.value})} placeholder="06 12 34 56 78" className="bg-secondary" />
+                </div>
               </div>
 
               <div className="space-y-2">
                 <Label>Adresse de livraison *</Label>
-                <Textarea
-                  value={newOrder.shipping_address}
-                  onChange={(e) => setNewOrder({...newOrder, shipping_address: e.target.value})}
-                  placeholder="Adresse complète"
-                  className="bg-secondary"
-                  data-testid="order-shipping-address"
-                />
+                <Textarea value={newOrder.shipping_address} onChange={(e) => setNewOrder({...newOrder, shipping_address: e.target.value})} placeholder="Adresse complète de livraison" className="bg-secondary" data-testid="order-shipping-address" />
+              </div>
+              <div className="space-y-2">
+                <Label>Adresse de facturation (si différente)</Label>
+                <Textarea value={newOrder.billing_address} onChange={(e) => setNewOrder({...newOrder, billing_address: e.target.value})} placeholder="Laisser vide = même que livraison" className="bg-secondary" />
               </div>
 
               <div className="space-y-4">

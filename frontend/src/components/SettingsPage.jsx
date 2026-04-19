@@ -27,13 +27,16 @@ export function SettingsPage() {
   });
   const [comptable, setComptable] = useState({ email: '', password: '', name: '' });
   const [comptableLoaded, setComptableLoaded] = useState(null);
+  const [boxtalConfig, setBoxtalConfig] = useState({ api_key: '', api_secret: '', mode: 'test' });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingComptable, setSavingComptable] = useState(false);
+  const [savingBoxtal, setSavingBoxtal] = useState(false);
 
   useEffect(() => {
     fetchConfig();
     fetchComptable();
+    fetchBoxtal();
   }, []);
 
   const fetchConfig = async () => {
@@ -42,6 +45,22 @@ export function SettingsPage() {
       if (response.data) setWooConfig(response.data);
     } catch (err) { console.error('Error fetching config:', err); }
     finally { setLoading(false); }
+  };
+
+  const fetchBoxtal = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/settings/boxtal`, { withCredentials: true });
+      if (response.data) setBoxtalConfig(response.data);
+    } catch (err) { console.error('Error fetching boxtal:', err); }
+  };
+
+  const saveBoxtal = async () => {
+    setSavingBoxtal(true);
+    try {
+      await axios.post(`${API_URL}/api/settings/boxtal`, boxtalConfig, { withCredentials: true });
+      toast.success('Configuration Boxtal sauvegardée');
+    } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }
+    finally { setSavingBoxtal(false); }
   };
 
   const fetchComptable = async () => {
@@ -220,6 +239,33 @@ export function SettingsPage() {
                 <strong>Note :</strong> La synchronisation sera activée dans une prochaine mise à jour.
               </p>
             </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Boxtal Configuration */}
+      <Card className="border-border">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Store className="w-5 h-5 text-primary" />
+            Expédition Boxtal
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">Configurez votre compte Boxtal pour générer automatiquement les bordereaux d'expédition.</p>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2"><Label>Clé API</Label><Input value={boxtalConfig.api_key} onChange={e => setBoxtalConfig({...boxtalConfig, api_key: e.target.value})} className="bg-secondary font-mono" placeholder="Votre clé API Boxtal" data-testid="boxtal-api-key" /></div>
+            <div className="space-y-2"><Label>Secret API</Label><Input type="password" value={boxtalConfig.api_secret} onChange={e => setBoxtalConfig({...boxtalConfig, api_secret: e.target.value})} className="bg-secondary font-mono" placeholder="Votre secret API" data-testid="boxtal-api-secret" /></div>
+          </div>
+          <div className="space-y-2"><Label>Mode</Label>
+            <select className="w-full p-3 rounded-xl bg-secondary border border-border" value={boxtalConfig.mode} onChange={e => setBoxtalConfig({...boxtalConfig, mode: e.target.value})}>
+              <option value="test">Test (simulation)</option>
+              <option value="production">Production</option>
+            </select>
+          </div>
+          <div className="flex justify-between items-center pt-2">
+            <p className="text-xs text-amber-500">Mode simulation actif — les bordereaux sont simulés</p>
+            <Button onClick={saveBoxtal} disabled={savingBoxtal} className="btn-primary" data-testid="save-boxtal">{savingBoxtal ? 'Enregistrement...' : 'Enregistrer'}</Button>
           </div>
         </CardContent>
       </Card>
