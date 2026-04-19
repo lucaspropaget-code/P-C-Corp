@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Plus, Search, Edit, Trash2, User, Mail, Phone, MapPin, Star, MessageSquare, Map as MapIcon } from 'lucide-react';
 import { formatApiErrorDetail } from '../context/AuthContext';
 import { toast } from 'sonner';
+import { AddressAutocomplete } from './AddressAutocomplete';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -155,10 +156,10 @@ export function CustomersPage() {
                 <div className="space-y-2"><Label>Email</Label><Input value={newCustomer.email} onChange={e => setNewCustomer({...newCustomer, email: e.target.value})} className="bg-secondary" /></div>
                 <div className="space-y-2"><Label>Téléphone</Label><Input value={newCustomer.phone} onChange={e => setNewCustomer({...newCustomer, phone: e.target.value})} className="bg-secondary" /></div>
               </div>
-              <div className="space-y-2"><Label>Adresse</Label><Textarea value={newCustomer.address} onChange={e => setNewCustomer({...newCustomer, address: e.target.value})} className="bg-secondary" /></div>
+              <div className="space-y-2"><Label>Adresse</Label><AddressAutocomplete value={newCustomer.address} onChange={v => setNewCustomer({...newCustomer, address: v})} onSelect={({address, latitude, longitude}) => setNewCustomer({...newCustomer, address, latitude: latitude?.toString()||'', longitude: longitude?.toString()||''})} /></div>
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2"><Label>Latitude</Label><Input type="number" step="0.0001" value={newCustomer.latitude} onChange={e => setNewCustomer({...newCustomer, latitude: e.target.value})} className="bg-secondary" placeholder="48.8566" /></div>
-                <div className="space-y-2"><Label>Longitude</Label><Input type="number" step="0.0001" value={newCustomer.longitude} onChange={e => setNewCustomer({...newCustomer, longitude: e.target.value})} className="bg-secondary" placeholder="2.3522" /></div>
+                <div className="space-y-2"><Label>Latitude (auto)</Label><Input type="number" step="0.0001" value={newCustomer.latitude} onChange={e => setNewCustomer({...newCustomer, latitude: e.target.value})} className="bg-secondary" placeholder="Auto-rempli" /></div>
+                <div className="space-y-2"><Label>Longitude (auto)</Label><Input type="number" step="0.0001" value={newCustomer.longitude} onChange={e => setNewCustomer({...newCustomer, longitude: e.target.value})} className="bg-secondary" placeholder="Auto-rempli" /></div>
               </div>
               <div className="space-y-2"><Label>Notes</Label><Textarea value={newCustomer.notes} onChange={e => setNewCustomer({...newCustomer, notes: e.target.value})} className="bg-secondary" /></div>
               <Button onClick={createOrUpdateCustomer} className="w-full btn-primary">{editingCustomer ? 'Mettre à jour' : 'Créer'}</Button>

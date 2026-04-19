@@ -16,9 +16,10 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from './ui/table';
-import { Plus, Download, Trash2, Upload, FileText, Receipt, Send, CheckCircle, AlertCircle, FileSpreadsheet, Bell, Clock, Loader2 } from 'lucide-react';
+import { Plus, Download, Trash2, Upload, FileText, Receipt, Send, CheckCircle, AlertCircle, FileSpreadsheet, Bell, Clock, Loader2, Search, UserPlus, Package } from 'lucide-react';
 import { formatApiErrorDetail } from '../context/AuthContext';
 import { toast } from 'sonner';
+import { AddressAutocomplete } from './AddressAutocomplete';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -38,8 +39,18 @@ export function InvoicesPage() {
   const [showNewPurchase, setShowNewPurchase] = useState(false);
   const [filterMonth, setFilterMonth] = useState('');
   const [newSale, setNewSale] = useState({ customer_name: '', customer_email: '', customer_address: '', items: [], tva_rate: 20, notes: '', status: 'draft' });
-  const [newItem, setNewItem] = useState({ description: '', quantity: 1, unit_price_ht: '' });
+  const [newItem, setNewItem] = useState({ description: '', quantity: 1, unit_price_ht: '', product_id: '' });
   const [newPurchase, setNewPurchase] = useState({ supplier: '', date: new Date().toISOString().split('T')[0], amount_ht: '', tva_rate: 20, category: 'other', description: '', status: 'to_pay', reference: '' });
+  // Client search
+  const [clientSearch, setClientSearch] = useState('');
+  const [clientResults, setClientResults] = useState([]);
+  const [showClientResults, setShowClientResults] = useState(false);
+  const [selectedClient, setSelectedClient] = useState(null);
+  const [clientMode, setClientMode] = useState('search'); // search | new
+  // Product search
+  const [productSearch, setProductSearch] = useState('');
+  const [productResults, setProductResults] = useState([]);
+  const [showProductResults, setShowProductResults] = useState(false);
 
   useEffect(() => { fetchData(); }, [filterMonth]);
 
@@ -64,7 +75,37 @@ export function InvoicesPage() {
   const addItem = () => {
     if (!newItem.description || !newItem.unit_price_ht) return;
     setNewSale({ ...newSale, items: [...newSale.items, { ...newItem, unit_price_ht: parseFloat(newItem.unit_price_ht), tva_rate: newSale.tva_rate }] });
-    setNewItem({ description: '', quantity: 1, unit_price_ht: '' });
+    setNewItem({ description: '', quantity: 1, unit_price_ht: '', product_id: '' });
+    setProductSearch('');
+  };
+
+  const searchClients = async (q) => {
+    try {
+      const res = await axios.get(`${API_URL}/api/customers/search?q=${encodeURIComponent(q)}`, { withCredentials: true });
+      setClientResults(res.data);
+      setShowClientResults(true);
+    } catch (err) { console.error(err); }
+  };
+
+  const selectClient = (client) => {
+    setSelectedClient(client);
+    setNewSale({ ...newSale, customer_name: client.name, customer_email: client.email, customer_address: client.address, customer_id: client.id });
+    setClientSearch(client.name);
+    setShowClientResults(false);
+  };
+
+  const searchProducts = async (q) => {
+    try {
+      const res = await axios.get(`${API_URL}/api/products/search?q=${encodeURIComponent(q)}`, { withCredentials: true });
+      setProductResults(res.data);
+      setShowProductResults(true);
+    } catch (err) { console.error(err); }
+  };
+
+  const selectProduct = (product) => {
+    setNewItem({ description: product.name, quantity: 1, unit_price_ht: (product.price / 1.2).toFixed(2), product_id: product.id });
+    setProductSearch(product.name);
+    setShowProductResults(false);
   };
 
   const createSalesInvoice = async () => {
@@ -186,23 +227,79 @@ export function InvoicesPage() {
               <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
                 <DialogHeader><DialogTitle>Créer une facture de vente</DialogTitle></DialogHeader>
                 <div className="space-y-4 py-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2"><Label>Client *</Label><Input value={newSale.customer_name} onChange={e => setNewSale({...newSale, customer_name: e.target.value})} className="bg-secondary" data-testid="invoice-customer" /></div>
-                    <div className="space-y-2"><Label>Email</Label><Input value={newSale.customer_email} onChange={e => setNewSale({...newSale, customer_email: e.target.value})} className="bg-secondary" /></div>
-                  </div>
-                  <div className="space-y-2"><Label>Adresse</Label><Input value={newSale.customer_address} onChange={e => setNewSale({...newSale, customer_address: e.target.value})} className="bg-secondary" /></div>
-                  <div className="space-y-2">
-                    <Label>TVA par défaut (%)</Label>
-                    <Input type="number" value={newSale.tva_rate} onChange={e => setNewSale({...newSale, tva_rate: parseFloat(e.target.value) || 20})} className="bg-secondary w-32" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Articles *</Label>
-                    <div className="flex gap-2">
-                      <Input placeholder="Description" value={newItem.description} onChange={e => setNewItem({...newItem, description: e.target.value})} className="flex-1 bg-secondary" />
-                      <Input type="number" min="1" value={newItem.quantity} onChange={e => setNewItem({...newItem, quantity: parseInt(e.target.value)||1})} className="w-16 bg-secondary" placeholder="Qté" />
-                      <Input type="number" step="0.01" placeholder="Prix HT" value={newItem.unit_price_ht} onChange={e => setNewItem({...newItem, unit_price_ht: e.target.value})} className="w-28 bg-secondary" />
-                      <Button onClick={addItem} variant="secondary"><Plus className="w-4 h-4" /></Button>
+                  {/* Client selection */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-base font-semibold">Client</Label>
+                      <div className="flex gap-1">
+                        <Button variant={clientMode==='search'?'default':'secondary'} size="sm" className={clientMode==='search'?'bg-primary text-black':''} onClick={() => setClientMode('search')}><Search className="w-3 h-3 mr-1" />Existant</Button>
+                        <Button variant={clientMode==='new'?'default':'secondary'} size="sm" className={clientMode==='new'?'bg-primary text-black':''} onClick={() => { setClientMode('new'); setSelectedClient(null); }}><UserPlus className="w-3 h-3 mr-1" />Nouveau</Button>
+                      </div>
                     </div>
+                    {clientMode === 'search' ? (
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                        <Input value={clientSearch} onChange={e => { setClientSearch(e.target.value); if(e.target.value.length >= 1) searchClients(e.target.value); else setShowClientResults(false); }} onFocus={() => { if(clientSearch.length >= 1) searchClients(clientSearch); }} placeholder="Rechercher un client (nom, email, tél)..." className="pl-10 bg-secondary" data-testid="invoice-client-search" />
+                        {showClientResults && clientResults.length > 0 && (
+                          <div className="absolute z-50 w-full mt-1 bg-card border border-border rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                            {clientResults.map(c => (
+                              <button key={c.id} type="button" className="w-full px-4 py-3 text-left hover:bg-secondary/80 border-b border-border last:border-0" onClick={() => selectClient(c)}>
+                                <p className="font-medium text-sm">{c.name}</p>
+                                <p className="text-xs text-muted-foreground">{c.email} {c.phone && `| ${c.phone}`}</p>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {selectedClient && (
+                          <div className="mt-2 p-3 rounded-lg bg-green-500/5 border border-green-500/20 flex justify-between items-center">
+                            <div><p className="font-medium text-sm text-green-500">{selectedClient.name}</p><p className="text-xs text-muted-foreground">{selectedClient.email} | {selectedClient.address}</p></div>
+                            <Button variant="ghost" size="sm" onClick={() => { setSelectedClient(null); setClientSearch(''); setNewSale({...newSale, customer_name:'', customer_email:'', customer_address:'', customer_id: null}); }}>×</Button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-3 p-3 rounded-lg bg-secondary/30 border border-border">
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1"><Label className="text-xs">Nom *</Label><Input value={newSale.customer_name} onChange={e => setNewSale({...newSale, customer_name: e.target.value})} className="bg-secondary" /></div>
+                          <div className="space-y-1"><Label className="text-xs">Email</Label><Input value={newSale.customer_email} onChange={e => setNewSale({...newSale, customer_email: e.target.value})} className="bg-secondary" /></div>
+                        </div>
+                        <div className="space-y-1"><Label className="text-xs">Adresse</Label><AddressAutocomplete value={newSale.customer_address} onChange={v => setNewSale({...newSale, customer_address: v})} onSelect={({address}) => setNewSale({...newSale, customer_address: address})} /></div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Payment & Source */}
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-2"><Label>Mode de paiement</Label><Select value={newSale.payment_method || ''} onValueChange={v => setNewSale({...newSale, payment_method: v})}><SelectTrigger className="bg-secondary"><SelectValue placeholder="Choisir" /></SelectTrigger><SelectContent><SelectItem value="cb">Carte bancaire</SelectItem><SelectItem value="paypal">PayPal</SelectItem><SelectItem value="virement">Virement</SelectItem><SelectItem value="cheque">Chèque</SelectItem><SelectItem value="mollie">Mollie</SelectItem><SelectItem value="especes">Espèces</SelectItem></SelectContent></Select></div>
+                    <div className="space-y-2"><Label>Source vente</Label><Select value={newSale.sale_source || 'site'} onValueChange={v => setNewSale({...newSale, sale_source: v})}><SelectTrigger className="bg-secondary"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="site">Site</SelectItem><SelectItem value="salon">Salon</SelectItem><SelectItem value="autre">Autre</SelectItem></SelectContent></Select></div>
+                    <div className="space-y-2"><Label>TVA (%)</Label><Input type="number" value={newSale.tva_rate} onChange={e => setNewSale({...newSale, tva_rate: parseFloat(e.target.value) || 20})} className="bg-secondary" /></div>
+                  </div>
+
+                  {/* Product search */}
+                  <div className="space-y-2">
+                    <Label className="text-base font-semibold flex items-center gap-2"><Package className="w-4 h-4" />Articles</Label>
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <Input value={productSearch} onChange={e => { setProductSearch(e.target.value); if(e.target.value.length >= 1) searchProducts(e.target.value); else setShowProductResults(false); }} onFocus={() => { if(!productSearch) searchProducts(''); }} placeholder="Rechercher un produit (nom, SKU)..." className="pl-10 bg-secondary" data-testid="invoice-product-search" />
+                      {showProductResults && productResults.length > 0 && (
+                        <div className="absolute z-50 w-full mt-1 bg-card border border-border rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                          {productResults.map(p => (
+                            <button key={p.id} type="button" className="w-full px-4 py-3 text-left hover:bg-secondary/80 border-b border-border last:border-0 flex justify-between items-center" onClick={() => selectProduct(p)}>
+                              <div><p className="font-medium text-sm">{p.name}</p><p className="text-xs text-muted-foreground">{p.sku} | Stock: {p.quantity}</p></div>
+                              <p className="font-medium text-primary">{fmt(p.price)}</p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {newItem.description && (
+                      <div className="flex gap-2 items-end mt-2">
+                        <div className="flex-1"><p className="text-xs text-muted-foreground mb-1">Produit sélectionné</p><Input value={newItem.description} readOnly className="bg-secondary" /></div>
+                        <div className="w-20"><p className="text-xs text-muted-foreground mb-1">Qté</p><Input type="number" min="1" value={newItem.quantity} onChange={e => setNewItem({...newItem, quantity: parseInt(e.target.value)||1})} className="bg-secondary" /></div>
+                        <div className="w-28"><p className="text-xs text-muted-foreground mb-1">Prix HT</p><Input type="number" step="0.01" value={newItem.unit_price_ht} onChange={e => setNewItem({...newItem, unit_price_ht: e.target.value})} className="bg-secondary" /></div>
+                        <Button onClick={addItem} className="btn-primary"><Plus className="w-4 h-4" /></Button>
+                      </div>
+                    )}
                     {newSale.items.length > 0 && (
                       <div className="rounded-xl border border-border overflow-hidden mt-2">
                         <Table><TableHeader><TableRow><TableHead>Description</TableHead><TableHead className="text-right">Qté</TableHead><TableHead className="text-right">PU HT</TableHead><TableHead className="text-right">Total HT</TableHead><TableHead></TableHead></TableRow></TableHeader>

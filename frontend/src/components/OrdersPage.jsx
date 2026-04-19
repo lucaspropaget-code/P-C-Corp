@@ -41,6 +41,7 @@ import {
 } from 'lucide-react';
 import { formatApiErrorDetail } from '../context/AuthContext';
 import { toast } from 'sonner';
+import { AddressAutocomplete } from './AddressAutocomplete';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -269,11 +270,11 @@ export function OrdersPage() {
 
               <div className="space-y-2">
                 <Label>Adresse de livraison *</Label>
-                <Textarea value={newOrder.shipping_address} onChange={(e) => setNewOrder({...newOrder, shipping_address: e.target.value})} placeholder="Adresse complète de livraison" className="bg-secondary" data-testid="order-shipping-address" />
+                <AddressAutocomplete value={newOrder.shipping_address} onChange={v => setNewOrder({...newOrder, shipping_address: v})} onSelect={({address}) => setNewOrder({...newOrder, shipping_address: address})} data-testid="order-shipping-address" />
               </div>
               <div className="space-y-2">
                 <Label>Adresse de facturation (si différente)</Label>
-                <Textarea value={newOrder.billing_address} onChange={(e) => setNewOrder({...newOrder, billing_address: e.target.value})} placeholder="Laisser vide = même que livraison" className="bg-secondary" />
+                <AddressAutocomplete value={newOrder.billing_address} onChange={v => setNewOrder({...newOrder, billing_address: v})} onSelect={({address}) => setNewOrder({...newOrder, billing_address: address})} placeholder="Laisser vide = même que livraison" />
               </div>
 
               <div className="space-y-4">

@@ -820,6 +820,29 @@ async def get_customers_map(user: dict = Depends(require_role(["admin"]))):
     customers = await db.customers.find({}).to_list(1000)
     return [{"id": str(c["_id"]), "name": c.get("name",""), "address": c.get("address",""), "status": c.get("status","particulier"), "latitude": c.get("latitude"), "longitude": c.get("longitude"), "total_orders": c.get("total_orders",0), "email": c.get("email",""), "phone": c.get("phone","")} for c in customers]
 
+@api_router.get("/customers/search")
+async def search_customers(q: str = "", user: dict = Depends(require_role(["admin"]))):
+    if not q or len(q) < 1:
+        customers = await db.customers.find({}).limit(10).to_list(10)
+    else:
+        customers = await db.customers.find({"$or": [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"email": {"$regex": q, "$options": "i"}},
+            {"phone": {"$regex": q, "$options": "i"}}
+        ]}).limit(10).to_list(10)
+    return [{"id": str(c["_id"]), "name": c.get("name",""), "email": c.get("email",""), "phone": c.get("phone",""), "address": c.get("address",""), "status": c.get("status","")} for c in customers]
+
+@api_router.get("/products/search")
+async def search_products(q: str = "", user: dict = Depends(require_role(["admin"]))):
+    if not q or len(q) < 1:
+        products = await db.products.find({}).limit(10).to_list(10)
+    else:
+        products = await db.products.find({"$or": [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"sku": {"$regex": q, "$options": "i"}}
+        ]}).limit(10).to_list(10)
+    return [{"id": str(p["_id"]), "name": p.get("name",""), "sku": p.get("sku",""), "price": p.get("price",0), "quantity": p.get("quantity",0)} for p in products]
+
 @api_router.get("/customers")
 async def get_customers(user: dict = Depends(require_role(["admin"]))):
     customers = await db.customers.find({}).sort("name", 1).to_list(1000)
