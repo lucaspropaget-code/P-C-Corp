@@ -16,6 +16,8 @@ import { WooCommerceSyncPage } from "./components/WooCommerceSyncPage";
 import { SocialDashboardPage } from "./components/SocialDashboardPage";
 import { InvoicesPage } from "./components/InvoicesPage";
 import { ComptableDashboard } from "./components/ComptableDashboard";
+import { EditorialCalendarPage } from "./components/EditorialCalendarPage";
+import { AgendaPage } from "./components/AgendaPage";
 import { Toaster } from "./components/ui/sonner";
 import "./App.css";
 
@@ -124,6 +126,14 @@ function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/agenda"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <Layout><AgendaPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
           
           {/* Comptable Routes */}
           <Route
@@ -149,6 +159,14 @@ function App() {
             element={
               <ProtectedRoute allowedRoles={['marketing', 'admin']}>
                 <Layout><MarketingAIPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/marketing/editorial"
+            element={
+              <ProtectedRoute allowedRoles={['marketing', 'admin']}>
+                <Layout><EditorialCalendarPage /></Layout>
               </ProtectedRoute>
             }
           />

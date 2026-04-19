@@ -29,12 +29,14 @@ const adminLinks = [
   { to: '/invoices', icon: FileText, label: 'Facturation' },
   { to: '/accounting', icon: Calculator, label: 'Comptabilité' },
   { to: '/bank', icon: Landmark, label: 'Banque' },
+  { to: '/agenda', icon: LayoutDashboard, label: 'Agenda' },
   { to: '/woo-sync', icon: RefreshCw, label: 'Synchro WooCommerce' },
   { to: '/settings', icon: Settings, label: 'Paramètres' },
 ];
 
 const marketingLinks = [
   { to: '/marketing', icon: TrendingUp, label: 'Statistiques' },
+  { to: '/marketing/editorial', icon: LayoutDashboard, label: 'Calendrier éditorial' },
   { to: '/marketing/ai', icon: Sparkles, label: 'Génération IA' },
   { to: '/marketing/social', icon: Share2, label: 'Réseaux sociaux' },
 ];

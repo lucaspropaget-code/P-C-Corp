@@ -2029,6 +2029,110 @@ async def get_social_metrics(user: dict = Depends(require_role(["marketing", "ad
         }
     }
 
+# ========= EDITORIAL CALENDAR + CAMPAIGNS + AGENDA =========
+
+# Editorial Calendar
+@api_router.get("/editorial/events")
+async def get_editorial_events(month: Optional[str] = None, user: dict = Depends(require_role(["marketing", "admin"]))):
+    query = {}
+    if month:
+        query["date"] = {"$regex": f"^{month}"}
+    events = await db.editorial_events.find(query).sort("date", 1).to_list(500)
+    return [{"id": str(e["_id"]), **{k:v for k,v in e.items() if k != "_id"}} for e in events]
+
+@api_router.post("/editorial/events")
+async def create_editorial_event(data: dict, user: dict = Depends(require_role(["marketing", "admin"]))):
+    data["created_at"] = datetime.now(timezone.utc).isoformat()
+    data["created_by"] = user["name"]
+    result = await db.editorial_events.insert_one(data)
+    data.pop("_id", None)
+    return {"id": str(result.inserted_id), **data}
+
+@api_router.put("/editorial/events/{event_id}")
+async def update_editorial_event(event_id: str, data: dict, user: dict = Depends(require_role(["marketing", "admin"]))):
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.editorial_events.update_one({"_id": ObjectId(event_id)}, {"$set": data})
+    return {"message": "Événement mis à jour"}
+
+@api_router.delete("/editorial/events/{event_id}")
+async def delete_editorial_event(event_id: str, user: dict = Depends(require_role(["marketing", "admin"]))):
+    await db.editorial_events.delete_one({"_id": ObjectId(event_id)})
+    return {"message": "Événement supprimé"}
+
+# Marketing Campaigns
+@api_router.get("/campaigns")
+async def get_campaigns(user: dict = Depends(require_role(["marketing", "admin"]))):
+    campaigns = await db.campaigns.find({}).sort("start_date", -1).to_list(500)
+    return [{"id": str(c["_id"]), **{k:v for k,v in c.items() if k != "_id"}} for c in campaigns]
+
+@api_router.post("/campaigns")
+async def create_campaign(data: dict, user: dict = Depends(require_role(["marketing", "admin"]))):
+    data["created_at"] = datetime.now(timezone.utc).isoformat()
+    data["created_by"] = user["name"]
+    data.setdefault("results", {"reach": 0, "clicks": 0, "conversions": 0})
+    result = await db.campaigns.insert_one(data)
+    data.pop("_id", None)
+    return {"id": str(result.inserted_id), **data}
+
+@api_router.put("/campaigns/{campaign_id}")
+async def update_campaign(campaign_id: str, data: dict, user: dict = Depends(require_role(["marketing", "admin"]))):
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.campaigns.update_one({"_id": ObjectId(campaign_id)}, {"$set": data})
+    return {"message": "Campagne mise à jour"}
+
+@api_router.delete("/campaigns/{campaign_id}")
+async def delete_campaign(campaign_id: str, user: dict = Depends(require_role(["marketing", "admin"]))):
+    await db.campaigns.delete_one({"_id": ObjectId(campaign_id)})
+    return {"message": "Campagne supprimée"}
+
+# Agenda
+@api_router.get("/agenda/events")
+async def get_agenda_events(month: Optional[str] = None, user: dict = Depends(require_role(["admin"]))):
+    query = {}
+    if month:
+        query["date"] = {"$regex": f"^{month}"}
+    events = await db.agenda_events.find(query).sort("date", 1).to_list(500)
+    return [{"id": str(e["_id"]), **{k:v for k,v in e.items() if k != "_id"}} for e in events]
+
+@api_router.post("/agenda/events")
+async def create_agenda_event(data: dict, user: dict = Depends(require_role(["admin"]))):
+    data["created_at"] = datetime.now(timezone.utc).isoformat()
+    data["created_by"] = user["name"]
+    data["synced_to_gcal"] = False
+    result = await db.agenda_events.insert_one(data)
+    data.pop("_id", None)
+    return {"id": str(result.inserted_id), **data}
+
+@api_router.put("/agenda/events/{event_id}")
+async def update_agenda_event(event_id: str, data: dict, user: dict = Depends(require_role(["admin"]))):
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.agenda_events.update_one({"_id": ObjectId(event_id)}, {"$set": data})
+    return {"message": "Événement mis à jour"}
+
+@api_router.delete("/agenda/events/{event_id}")
+async def delete_agenda_event(event_id: str, user: dict = Depends(require_role(["admin"]))):
+    await db.agenda_events.delete_one({"_id": ObjectId(event_id)})
+    return {"message": "Événement supprimé"}
+
+@api_router.post("/agenda/events/{event_id}/sync-gcal")
+async def sync_to_gcal(event_id: str, user: dict = Depends(require_role(["admin"]))):
+    """Simulated Google Calendar sync"""
+    await db.agenda_events.update_one({"_id": ObjectId(event_id)}, {"$set": {"synced_to_gcal": True, "gcal_synced_at": datetime.now(timezone.utc).isoformat()}})
+    return {"message": "Synchronisé vers Google Agenda (simulé)", "simulated": True}
+
+# Google Calendar config
+@api_router.get("/settings/google-calendar")
+async def get_gcal_config(user: dict = Depends(require_role(["admin"]))):
+    config = await db.settings.find_one({"type": "google_calendar"}, {"_id": 0})
+    return config or {"calendar_id": "", "connected": False}
+
+@api_router.post("/settings/google-calendar")
+async def save_gcal_config(data: dict, user: dict = Depends(require_role(["admin"]))):
+    data["type"] = "google_calendar"
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.settings.update_one({"type": "google_calendar"}, {"$set": data}, upsert=True)
+    return {"message": "Configuration Google Agenda sauvegardée"}
+
 # Include the router
 app.include_router(api_router)
 
@@ -2218,6 +2322,59 @@ async def startup_event():
             m["created_at"] = (datetime.now(timezone.utc) - timedelta(days=10-i)).isoformat()
             await db.stock_movements.insert_one(m)
         logger.info("Stock movements seeded")
+    
+    # Seed editorial calendar with French commercial events 2026
+    existing_ed = await db.editorial_events.count_documents({})
+    if existing_ed == 0:
+        editorial_events = [
+            {"date": "2026-01-01", "title": "Nouvel An", "type": "commercial", "platform": "all", "content": "Bonne année ! Découvrez nos offres de rentrée", "status": "published", "auto": True},
+            {"date": "2026-01-08", "title": "Soldes d'hiver", "type": "promo", "platform": "all", "content": "Soldes d'hiver Assault58 - jusqu'à -30%", "status": "published", "auto": True},
+            {"date": "2026-02-14", "title": "Saint-Valentin", "type": "commercial", "platform": "instagram", "content": "Offrez une lampe tactique à votre partenaire d'aventure", "status": "draft", "auto": True},
+            {"date": "2026-03-08", "title": "Journée de la femme", "type": "commercial", "platform": "instagram", "content": "L'aventure n'a pas de genre - Assault58", "status": "draft", "auto": True},
+            {"date": "2026-04-20", "title": "Lancement T1500 V2", "type": "lancement", "platform": "all", "content": "Nouveau ! Assault58 Tactical T1500 V2 - encore plus puissante", "status": "draft", "auto": False},
+            {"date": "2026-05-01", "title": "Fête du travail", "type": "commercial", "platform": "facebook", "content": "", "status": "draft", "auto": True},
+            {"date": "2026-06-24", "title": "Soldes d'été", "type": "promo", "platform": "all", "content": "Soldes d'été - équipez-vous pour vos aventures", "status": "draft", "auto": True},
+            {"date": "2026-06-21", "title": "Fête des pères", "type": "commercial", "platform": "all", "content": "Le cadeau parfait pour papa aventurier", "status": "draft", "auto": True},
+            {"date": "2026-09-15", "title": "Salon Milipol", "type": "salon", "platform": "all", "content": "Retrouvez-nous au Salon Milipol - Stand B42", "status": "draft", "auto": False},
+            {"date": "2026-11-27", "title": "Black Friday", "type": "promo", "platform": "all", "content": "Black Friday Assault58 - offres exceptionnelles", "status": "draft", "auto": True},
+            {"date": "2026-12-01", "title": "Calendrier de l'Avent", "type": "promo", "platform": "instagram", "content": "24 jours, 24 surprises !", "status": "draft", "auto": True},
+            {"date": "2026-12-25", "title": "Noël", "type": "commercial", "platform": "all", "content": "Joyeux Noël ! L'aventure commence sous le sapin", "status": "draft", "auto": True},
+        ]
+        for ev in editorial_events:
+            ev["created_at"] = datetime.now(timezone.utc).isoformat()
+            ev["created_by"] = "Système"
+            await db.editorial_events.insert_one(ev)
+        logger.info("Editorial events seeded")
+    
+    # Seed campaigns
+    existing_camp = await db.campaigns.count_documents({})
+    if existing_camp == 0:
+        campaigns = [
+            {"name": "Lancement Ultra X2000", "platform": "facebook", "start_date": "2026-03-01", "end_date": "2026-03-31", "budget_planned": 500, "budget_spent": 423.50, "status": "completed", "results": {"reach": 45200, "clicks": 1230, "conversions": 34}},
+            {"name": "Promo Printemps Instagram", "platform": "instagram", "start_date": "2026-04-01", "end_date": "2026-04-30", "budget_planned": 350, "budget_spent": 187.20, "status": "active", "results": {"reach": 22800, "clicks": 876, "conversions": 12}},
+            {"name": "Vidéo TikTok Tactical", "platform": "tiktok", "start_date": "2026-04-15", "end_date": "2026-05-15", "budget_planned": 200, "budget_spent": 0, "status": "planned", "results": {"reach": 0, "clicks": 0, "conversions": 0}},
+        ]
+        for c in campaigns:
+            c["created_at"] = datetime.now(timezone.utc).isoformat()
+            c["created_by"] = "Système"
+            await db.campaigns.insert_one(c)
+        logger.info("Campaigns seeded")
+    
+    # Seed agenda events
+    existing_agenda = await db.agenda_events.count_documents({})
+    if existing_agenda == 0:
+        agenda_events = [
+            {"date": "2026-04-25", "time": "09:00", "title": "Réunion fournisseur LED", "type": "reunion", "description": "Négociation prix composants Q3", "location": "Bureau Paris", "synced_to_gcal": False},
+            {"date": "2026-05-10", "time": "10:00", "title": "Shooting photo produits", "type": "marketing", "description": "Photos gamme 2026 pour site et réseaux", "location": "Studio Photo Lyon", "synced_to_gcal": False},
+            {"date": "2026-06-15", "time": "08:00", "title": "Salon Eurosatory", "type": "salon", "description": "Salon international de défense - Stand prévu", "location": "Paris Nord Villepinte", "synced_to_gcal": False},
+            {"date": "2026-09-15", "time": "08:00", "title": "Salon Milipol", "type": "salon", "description": "Salon mondial de la sûreté intérieure", "location": "Paris Nord Villepinte", "synced_to_gcal": False},
+            {"date": "2026-11-20", "time": "14:00", "title": "Préparation Black Friday", "type": "promo", "description": "Finalisation offres et visuels BF", "location": "Bureau", "synced_to_gcal": False},
+        ]
+        for ev in agenda_events:
+            ev["created_at"] = datetime.now(timezone.utc).isoformat()
+            ev["created_by"] = "Système"
+            await db.agenda_events.insert_one(ev)
+        logger.info("Agenda events seeded")
     
     # Write test credentials
     Path("/app/memory").mkdir(exist_ok=True)
