@@ -1246,6 +1246,32 @@ async def create_sales_invoice(invoice: SalesInvoiceCreate, user: dict = Depends
     
     result = await db.invoices.insert_one(inv_dict)
     inv_dict.pop("_id", None)
+    
+    # Decrement stock for each item with a product_id
+    for item in invoice.items:
+        product_id = item.get("product_id")
+        if product_id:
+            qty = item.get("quantity", 1)
+            product = await db.products.find_one({"_id": ObjectId(product_id)})
+            if product:
+                new_qty = max(0, product["quantity"] - qty)
+                await db.products.update_one(
+                    {"_id": ObjectId(product_id)},
+                    {"$set": {"quantity": new_qty, "updated_at": now.isoformat()}}
+                )
+                await db.stock_movements.insert_one({
+                    "product_id": product_id,
+                    "product_name": product["name"],
+                    "quantity_change": -qty,
+                    "previous_quantity": product["quantity"],
+                    "new_quantity": new_qty,
+                    "reason": f"Facture {number}",
+                    "movement_type": "normal",
+                    "user_id": user["_id"],
+                    "user_name": user["name"],
+                    "created_at": now.isoformat()
+                })
+    
     return {"id": str(result.inserted_id), **inv_dict}
 
 @api_router.put("/invoices/sales/{invoice_id}")
