@@ -935,7 +935,88 @@ async def save_boxtal_config(data: dict, user: dict = Depends(require_role(["adm
     await db.settings.update_one({"type": "boxtal"}, {"$set": data}, upsert=True)
     return {"message": "Configuration Boxtal sauvegardée"}
 
-# Simulated Boxtal shipping
+# Boxtal Shipping Integration
+BOXTAL_API_BASE = "https://api.envoimoinscher.com/v2"
+
+async def _boxtal_request(method: str, endpoint: str, data: dict = None):
+    """Make authenticated Boxtal API request"""
+    api_key = os.environ.get("BOXTAL_API_KEY", "")
+    api_secret = os.environ.get("BOXTAL_API_SECRET", "")
+    mode = os.environ.get("BOXTAL_MODE", "sandbox")
+    
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Clés API Boxtal non configurées")
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "X-API-SECRET": api_secret,
+        "Content-Type": "application/json"
+    }
+    
+    url = f"{BOXTAL_API_BASE}/{endpoint}"
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            if method == "POST":
+                resp = await client.post(url, headers=headers, json=data or {})
+            else:
+                resp = await client.get(url, headers=headers, params=data or {})
+            
+            if resp.status_code >= 400:
+                logging.warning(f"Boxtal API {resp.status_code}: {resp.text[:300]}")
+                return None
+            return resp.json()
+        except Exception as e:
+            logging.warning(f"Boxtal API error: {e}")
+            return None
+
+def _get_sender_info():
+    return {
+        "name": os.environ.get("BOXTAL_SENDER_NAME", "Assault58"),
+        "address": os.environ.get("BOXTAL_SENDER_ADDRESS", "35 Rue Saint Jacques"),
+        "city": os.environ.get("BOXTAL_SENDER_CITY", "Cosne-Cours-sur-Loire"),
+        "zip": os.environ.get("BOXTAL_SENDER_POSTCODE", "58200"),
+        "country": os.environ.get("BOXTAL_SENDER_COUNTRY", "FR"),
+        "phone": os.environ.get("BOXTAL_SENDER_PHONE", "0386000000")
+    }
+
+@api_router.post("/shipping/quote")
+async def get_shipping_quotes(data: dict, request: Request):
+    """Get shipping quotes from Boxtal for an order"""
+    user = await get_current_user(request)
+    if user["role"] not in ["admin", "stockeur"]:
+        raise HTTPException(status_code=403, detail="Accès non autorisé")
+    
+    order_id = data.get("order_id")
+    order = await db.orders.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        raise HTTPException(status_code=404, detail="Commande non trouvée")
+    
+    sender = _get_sender_info()
+    weight = data.get("weight", 0.5)
+    
+    # Try real Boxtal API
+    quote_data = {
+        "pickup": {"country": sender["country"], "zip": sender["zip"]},
+        "destination": {"country": "FR", "zip": data.get("destination_zip", "75001")},
+        "parcel": {"weight": weight, "length": data.get("length", 25), "width": data.get("width", 15), "height": data.get("height", 10)}
+    }
+    
+    result = await _boxtal_request("POST", "quotes", quote_data)
+    
+    if result and "quotes" in result:
+        return {"quotes": result["quotes"], "source": "boxtal_api"}
+    
+    # Fallback: simulated quotes for all carriers
+    return {"quotes": [
+        {"id": "colissimo_home", "carrier": "Colissimo", "service": "Colissimo Domicile", "price_ht": 6.50, "price_ttc": 7.80, "delivery_time": "2-3 jours"},
+        {"id": "colissimo_relay", "carrier": "Colissimo", "service": "Colissimo Point Relais", "price_ht": 4.90, "price_ttc": 5.88, "delivery_time": "3-4 jours"},
+        {"id": "mondial_relay", "carrier": "Mondial Relay", "service": "Mondial Relay Point", "price_ht": 3.90, "price_ttc": 4.68, "delivery_time": "4-5 jours"},
+        {"id": "chronopost_13", "carrier": "Chronopost", "service": "Chronopost 13h", "price_ht": 12.50, "price_ttc": 15.00, "delivery_time": "Lendemain avant 13h"},
+        {"id": "ups_standard", "carrier": "UPS", "service": "UPS Standard", "price_ht": 8.90, "price_ttc": 10.68, "delivery_time": "2-4 jours"},
+        {"id": "dhl_express", "carrier": "DHL", "service": "DHL Express", "price_ht": 15.90, "price_ttc": 19.08, "delivery_time": "1-2 jours"},
+    ], "source": "simulation"}
+
 @api_router.post("/shipping/create-label")
 async def create_shipping_label(data: dict, request: Request):
     user = await get_current_user(request)
@@ -943,36 +1024,69 @@ async def create_shipping_label(data: dict, request: Request):
         raise HTTPException(status_code=403, detail="Accès non autorisé")
     
     order_id = data.get("order_id")
-    shipping_method = data.get("method", "colissimo_domicile")  # colissimo_domicile, colissimo_relais
+    carrier_id = data.get("carrier_id", "colissimo_home")
+    carrier_name = data.get("carrier_name", "Colissimo Domicile")
+    weight = data.get("weight", 0.5)
     
     order = await db.orders.find_one({"_id": ObjectId(order_id)})
     if not order:
         raise HTTPException(status_code=404, detail="Commande non trouvée")
     
-    # Simulated label generation
+    sender = _get_sender_info()
+    
+    # Try real Boxtal API order
+    order_data = {
+        "carrier_id": carrier_id,
+        "sender": sender,
+        "recipient": {
+            "name": order.get("customer_name", ""),
+            "address": order.get("shipping_address", ""),
+            "country": "FR",
+            "phone": order.get("customer_phone", ""),
+            "email": order.get("customer_email", "")
+        },
+        "parcel": {"weight": weight}
+    }
+    
+    api_result = await _boxtal_request("POST", "orders", order_data)
+    
+    tracking_number = None
+    label_url = None
+    source = "simulation"
+    
+    if api_result and "tracking_number" in api_result:
+        tracking_number = api_result["tracking_number"]
+        label_url = api_result.get("label_url", "")
+        source = "boxtal_api"
+    else:
+        # Simulated tracking
+        prefix = carrier_id[:2].upper() if carrier_id else "BX"
+        tracking_number = f"{prefix}{secrets.token_hex(6).upper()}"
+        label_url = f"#simulation-{tracking_number}"
+    
     label = {
         "order_id": order_id,
         "order_number": order.get("order_number", ""),
-        "tracking_number": f"{'6C' if shipping_method == 'colissimo_domicile' else '6R'}{secrets.token_hex(6).upper()}",
-        "carrier": "Colissimo",
-        "method": shipping_method,
-        "method_label": "Colissimo Domicile" if shipping_method == "colissimo_domicile" else "Colissimo Point Relais",
+        "tracking_number": tracking_number,
+        "carrier": carrier_name,
+        "carrier_id": carrier_id,
         "status": "created",
         "customer_name": order.get("customer_name", ""),
         "shipping_address": order.get("shipping_address", ""),
-        "weight": data.get("weight", 0.5),
+        "weight": weight,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": user["name"],
-        "label_url": f"#simulated-label-{secrets.token_hex(4)}"
+        "label_url": label_url,
+        "source": source
     }
     
     result = await db.shipping_labels.insert_one(label)
     label.pop("_id", None)
     
-    # Update order with tracking
     await db.orders.update_one({"_id": ObjectId(order_id)}, {"$set": {
-        "tracking_number": label["tracking_number"],
-        "shipping_method": label["method_label"],
+        "tracking_number": tracking_number,
+        "shipping_method": carrier_name,
+        "shipping_carrier_id": carrier_id,
         "updated_at": datetime.now(timezone.utc).isoformat()
     }})
     
