@@ -197,6 +197,8 @@ class OrderCreate(BaseModel):
     items: List[dict]
     notes: Optional[str] = ""
     source: str = "site"  # site, salon, autre
+    shipping_method: Optional[str] = ""        # Human-readable label (e.g. "Colissimo Domicile")
+    shipping_method_id: Optional[str] = ""     # Boxtal carrier ID (e.g. "colissimo_home")
 
 class OrderStatusUpdate(BaseModel):
     status: str  # pending, shipped, delivered, cancelled
@@ -519,6 +521,15 @@ async def create_order(order: OrderCreate, user: dict = Depends(require_role(["a
     if not order_dict.get("billing_address"):
         order_dict["billing_address"] = order_dict["shipping_address"]
     
+    # Normalise shipping method -> Boxtal carrier
+    carrier_id, carrier_name = _resolve_carrier(
+        order_dict.get("shipping_method_id", ""),
+        order_dict.get("shipping_method", "")
+    )
+    order_dict["shipping_method_id"] = carrier_id
+    order_dict["shipping_method"] = order_dict.get("shipping_method") or carrier_name
+    order_dict["shipping_method_title"] = order_dict.get("shipping_method") or carrier_name
+    
     # Update stock for each item
     for item in order.items:
         if "product_id" in item and item["product_id"]:
@@ -528,6 +539,7 @@ async def create_order(order: OrderCreate, user: dict = Depends(require_role(["a
             )
     
     result = await db.orders.insert_one(order_dict)
+    order_dict.pop("_id", None)
     return {"id": str(result.inserted_id), **order_dict}
 
 @api_router.put("/orders/{order_id}/status")
@@ -808,9 +820,17 @@ async def get_stockeur_orders(user: dict = Depends(require_role(["stockeur", "ad
         "id": str(o["_id"]),
         "order_number": o.get("order_number", ""),
         "customer_name": o["customer_name"],
+        "customer_email": o.get("customer_email", ""),
+        "customer_phone": o.get("customer_phone", ""),
         "shipping_address": o["shipping_address"],
         "items": o["items"],
-        "created_at": o["created_at"]
+        "created_at": o["created_at"],
+        "shipping_method": o.get("shipping_method", ""),
+        "shipping_method_id": o.get("shipping_method_id", ""),
+        "shipping_method_title": o.get("shipping_method_title", ""),
+        "tracking_number": o.get("tracking_number", ""),
+        "label_url": o.get("label_url", ""),
+        "source": o.get("source", "")
     } for o in orders]
 
 # Customers Management
@@ -938,6 +958,30 @@ async def save_boxtal_config(data: dict, user: dict = Depends(require_role(["adm
 # Boxtal Shipping Integration
 BOXTAL_API_BASE = "https://api.envoimoinscher.com/v2"
 
+# Catalog of supported Boxtal carriers (id -> human label + matching keywords)
+BOXTAL_CARRIERS = {
+    "colissimo_home":  {"name": "Colissimo Domicile",      "keywords": ["colissimo", "la poste"],                "avoid": ["relais", "point"]},
+    "colissimo_relay": {"name": "Colissimo Point Relais",  "keywords": ["colissimo", "relais"],                  "avoid": []},
+    "mondial_relay":   {"name": "Mondial Relay Point",     "keywords": ["mondial relay", "mondial-relay"],       "avoid": []},
+    "chronopost_13":   {"name": "Chronopost 13h",          "keywords": ["chronopost"],                           "avoid": []},
+    "ups_standard":    {"name": "UPS Standard",            "keywords": ["ups"],                                   "avoid": []},
+    "dhl_express":     {"name": "DHL Express",             "keywords": ["dhl"],                                   "avoid": []},
+}
+
+def _resolve_carrier(shipping_method_id: str, shipping_method_title: str):
+    """Resolve a WooCommerce/manual shipping method into a Boxtal carrier (id + name).
+    Priority: explicit shipping_method_id -> then keyword match on method_title."""
+    sid = (shipping_method_id or "").strip().lower()
+    if sid in BOXTAL_CARRIERS:
+        return sid, BOXTAL_CARRIERS[sid]["name"]
+    title = (shipping_method_title or "").strip().lower()
+    if title:
+        for cid, meta in BOXTAL_CARRIERS.items():
+            if any(kw in title for kw in meta["keywords"]) and not any(av in title for av in meta["avoid"]):
+                return cid, meta["name"]
+    # Default: Colissimo Domicile
+    return "colissimo_home", BOXTAL_CARRIERS["colissimo_home"]["name"]
+
 async def _boxtal_request(method: str, endpoint: str, data: dict = None):
     """Make authenticated Boxtal API request"""
     api_key = os.environ.get("BOXTAL_API_KEY", "")
@@ -1019,18 +1063,32 @@ async def get_shipping_quotes(data: dict, request: Request):
 
 @api_router.post("/shipping/create-label")
 async def create_shipping_label(data: dict, request: Request):
+    """Generate a Boxtal shipping label for an order using the carrier the
+    customer chose at checkout (stored on the order). The Stockeur does not
+    pick the carrier: it is read directly from the order document."""
     user = await get_current_user(request)
     if user["role"] not in ["admin", "stockeur"]:
         raise HTTPException(status_code=403, detail="Accès non autorisé")
     
     order_id = data.get("order_id")
-    carrier_id = data.get("carrier_id", "colissimo_home")
-    carrier_name = data.get("carrier_name", "Colissimo Domicile")
     weight = data.get("weight", 0.5)
     
     order = await db.orders.find_one({"_id": ObjectId(order_id)})
     if not order:
         raise HTTPException(status_code=404, detail="Commande non trouvée")
+    
+    # Idempotence: if label already generated, return it
+    if order.get("tracking_number") and order.get("label_url"):
+        existing = await db.shipping_labels.find_one({"order_id": order_id}, sort=[("created_at", -1)])
+        if existing:
+            existing.pop("_id", None)
+            return {"id": order_id, **existing, "already_generated": True}
+    
+    # Resolve the carrier the customer chose at checkout (WooCommerce or manual)
+    carrier_id, carrier_name = _resolve_carrier(
+        order.get("shipping_method_id", ""),
+        order.get("shipping_method_title") or order.get("shipping_method", "")
+    )
     
     sender = _get_sender_info()
     
@@ -1085,6 +1143,7 @@ async def create_shipping_label(data: dict, request: Request):
     
     await db.orders.update_one({"_id": ObjectId(order_id)}, {"$set": {
         "tracking_number": tracking_number,
+        "label_url": label_url,
         "shipping_method": carrier_name,
         "shipping_carrier_id": carrier_id,
         "updated_at": datetime.now(timezone.utc).isoformat()
@@ -1965,6 +2024,15 @@ async def sync_woocommerce(req: WooSyncRequest, user: dict = Depends(require_rol
                     if not ship_addr or ship_addr == ",":
                         ship_addr = f"{billing.get('address_1', '')} {billing.get('address_2', '')}, {billing.get('postcode', '')} {billing.get('city', '')}".strip(", ")
                     
+                    # Extract shipping method chosen by the customer at checkout
+                    shipping_lines = wo.get("shipping_lines") or []
+                    ship_method_id = ""
+                    ship_method_title = ""
+                    if shipping_lines:
+                        ship_method_id = shipping_lines[0].get("method_id", "") or ""
+                        ship_method_title = shipping_lines[0].get("method_title", "") or ""
+                    carrier_id, carrier_name = _resolve_carrier(ship_method_id, ship_method_title)
+                    
                     woo_status_map = {"processing": "pending", "completed": "delivered", "on-hold": "pending", "cancelled": "cancelled", "refunded": "cancelled", "pending": "pending"}
                     
                     order_doc = {
@@ -1978,6 +2046,9 @@ async def sync_woocommerce(req: WooSyncRequest, user: dict = Depends(require_rol
                         "total_amount": float(wo.get("total", 0)),
                         "status": woo_status_map.get(wo["status"], "pending"),
                         "source": "woocommerce",
+                        "shipping_method": ship_method_title or carrier_name,
+                        "shipping_method_id": carrier_id,
+                        "shipping_method_title": ship_method_title,
                         "created_at": wo.get("date_created", datetime.now(timezone.utc).isoformat()),
                         "updated_at": datetime.now(timezone.utc).isoformat()
                     }
@@ -2058,6 +2129,15 @@ async def woocommerce_webhook(request: Request):
             if not ship_addr or ship_addr == ",":
                 ship_addr = f"{billing.get('address_1', '')} {billing.get('address_2', '')}, {billing.get('postcode', '')} {billing.get('city', '')}".strip(", ")
             
+            # Extract shipping method chosen by the customer at checkout
+            shipping_lines = wo.get("shipping_lines") or []
+            ship_method_id = ""
+            ship_method_title = ""
+            if shipping_lines:
+                ship_method_id = shipping_lines[0].get("method_id", "") or ""
+                ship_method_title = shipping_lines[0].get("method_title", "") or ""
+            carrier_id, carrier_name = _resolve_carrier(ship_method_id, ship_method_title)
+            
             items = [{"product_id": "", "product_name": li.get("name", ""), "quantity": li.get("quantity", 1), "unit_price": float(li.get("price", 0))} for li in wo.get("line_items", [])]
             woo_status_map = {"processing": "pending", "completed": "delivered", "on-hold": "pending", "cancelled": "cancelled", "refunded": "cancelled", "pending": "pending"}
             
@@ -2067,6 +2147,9 @@ async def woocommerce_webhook(request: Request):
                     "status": woo_status_map.get(wo.get("status", ""), "pending"),
                     "items": items,
                     "total_amount": float(wo.get("total", 0)),
+                    "shipping_method": ship_method_title or carrier_name,
+                    "shipping_method_id": carrier_id,
+                    "shipping_method_title": ship_method_title,
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 }})
             else:
@@ -2081,6 +2164,9 @@ async def woocommerce_webhook(request: Request):
                     "total_amount": float(wo.get("total", 0)),
                     "status": woo_status_map.get(wo.get("status", ""), "pending"),
                     "source": "woocommerce",
+                    "shipping_method": ship_method_title or carrier_name,
+                    "shipping_method_id": carrier_id,
+                    "shipping_method_title": ship_method_title,
                     "created_at": wo.get("date_created", datetime.now(timezone.utc).isoformat()),
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 }
@@ -2459,11 +2545,24 @@ async def startup_event():
             ]
             
             days_offset = [0, 0, 0, 1, 2, 3, 4, 3, 5, 6, 7]
+            demo_methods = [
+                ("colissimo_home", "Colissimo Domicile"),
+                ("colissimo_relay", "Colissimo Point Relais"),
+                ("mondial_relay", "Mondial Relay Point"),
+                ("chronopost_13", "Chronopost 13h"),
+                ("ups_standard", "UPS Standard"),
+                ("dhl_express", "DHL Express"),
+            ]
             for i, order in enumerate(demo_orders):
                 order_date = datetime.now(timezone.utc) - timedelta(days=days_offset[i] if i < len(days_offset) else 0)
                 order["created_at"] = order_date.isoformat()
                 order["updated_at"] = order_date.isoformat()
                 order["status_history"] = [{"old_status": "new", "new_status": order["status"], "changed_by": "Système", "changed_at": order_date.isoformat()}]
+                cid, cname = demo_methods[i % len(demo_methods)]
+                order["shipping_method_id"] = cid
+                order["shipping_method"] = cname
+                order["shipping_method_title"] = cname
+                order["customer_phone"] = order.get("customer_phone", "06 00 00 00 00")
                 await db.orders.insert_one(order)
                 logger.info(f"Order created: {order['order_number']}")
     

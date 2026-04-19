@@ -72,7 +72,9 @@ export function OrdersPage() {
     billing_address: '',
     items: [],
     notes: '',
-    source: 'site'
+    source: 'site',
+    shipping_method_id: 'colissimo_home',
+    shipping_method: 'Colissimo Domicile'
   });
   const [newItem, setNewItem] = useState({ product_id: '', quantity: 1 });
 
@@ -186,7 +188,9 @@ export function OrdersPage() {
         billing_address: '',
         items: [],
         notes: '',
-        source: 'site'
+        source: 'site',
+        shipping_method_id: 'colissimo_home',
+        shipping_method: 'Colissimo Domicile'
       });
       fetchOrders();
     } catch (err) {
@@ -275,6 +279,33 @@ export function OrdersPage() {
               <div className="space-y-2">
                 <Label>Adresse de facturation (si différente)</Label>
                 <AddressAutocomplete value={newOrder.billing_address} onChange={v => setNewOrder({...newOrder, billing_address: v})} onSelect={({address}) => setNewOrder({...newOrder, billing_address: address})} placeholder="Laisser vide = même que livraison" />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Transporteur choisi par le client *</Label>
+                <select
+                  className="w-full p-3 rounded-xl bg-secondary border border-border"
+                  value={newOrder.shipping_method_id}
+                  onChange={(e) => {
+                    const map = {
+                      colissimo_home:  'Colissimo Domicile',
+                      colissimo_relay: 'Colissimo Point Relais',
+                      mondial_relay:   'Mondial Relay Point',
+                      chronopost_13:   'Chronopost 13h',
+                      ups_standard:    'UPS Standard',
+                      dhl_express:     'DHL Express',
+                    };
+                    setNewOrder({ ...newOrder, shipping_method_id: e.target.value, shipping_method: map[e.target.value] });
+                  }}
+                  data-testid="order-shipping-method"
+                >
+                  <option value="colissimo_home">Colissimo Domicile</option>
+                  <option value="colissimo_relay">Colissimo Point Relais</option>
+                  <option value="mondial_relay">Mondial Relay Point</option>
+                  <option value="chronopost_13">Chronopost 13h</option>
+                  <option value="ups_standard">UPS Standard</option>
+                  <option value="dhl_express">DHL Express</option>
+                </select>
               </div>
 
               <div className="space-y-4">
@@ -469,6 +500,15 @@ export function OrdersPage() {
                                 </p>
                                 <p>{order.shipping_address}</p>
                               </div>
+                              {order.shipping_method && (
+                                <div>
+                                  <p className="text-muted-foreground text-sm">Transporteur</p>
+                                  <p className="font-medium">{order.shipping_method}</p>
+                                  {order.tracking_number && (
+                                    <p className="text-xs text-muted-foreground font-mono">Suivi : {order.tracking_number}</p>
+                                  )}
+                                </div>
+                              )}
                               <div>
                                 <p className="text-muted-foreground text-sm mb-2">Produits</p>
                                 {order.items?.map((item, i) => (
